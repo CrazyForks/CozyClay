@@ -2,7 +2,9 @@ import {
 	FAL_MOTION_STILL_OUTPUT, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_MIN_DURATION,
 	waitForFalMotionJob, submitFalMotion, buildH3MotionPrompt,
 } from "../fal-motion-client.js";
-import { useState } from "react";
+import { useState, useEffect, useSyncExternalStore } from "react";
+import { createDocumentStore } from '../document-store.js';
+import { useDocumentDomain } from '../store/use-document-store.js';
 import { createPhysicsProgress } from "../ardy/physics-panel.jsx";
 import {
 	TIMELINE_FPS,
@@ -103,7 +105,230 @@ import { isLineEditUnsupported } from "../line-edit.js";
 import { openMotionDb, getMotion, putMotion } from "../motion-store.js";
 import { resolveMotionSource, decodeMotionResource, encodeMotionResource } from "../motion-resources.js";
 
+const sameMotionIntent = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const emptyMotionLayer = id => ({ id, take: null, fullTake: null, ikKeys: [], committedIkEdits: [], takeRecipe: null, takeVersions: [] });
+const keyVector = p => ({ x: p.x, y: p.y, z: p.z });
+const keyQuaternion = q => ({ ...keyVector(q), w: q.w });
+function encodeMotionKeys(keys) {
+	return [...keys].sort(([a], [b]) => a - b).map(([frame, tracks]) => ({ frame, tracks: Object.fromEntries([...tracks].map(([track, key]) => [track, {
+		...(key.q ? { q: key.q.map(keyQuaternion) } : {}), ...(key.p ? { p: keyVector(key.p) } : {}),
+		...(key.baseQ ? { baseQ: key.baseQ.map(keyQuaternion) } : {}), ...(key.basePos ? { basePos: keyVector(key.basePos) } : {}),
+		...(key.chainP ? { chainP: key.chainP.map(keyVector) } : {}), ...(key.keepTranslations ? { keepTranslations: true } : {}),
+	}])) }));
+}
+function decodeMotionKeys(rows) {
+	const q = value => new THREE.Quaternion(value.x, value.y, value.z, value.w).normalize();
+	const p = value => new THREE.Vector3(value.x, value.y, value.z);
+	return new Map(rows.map(row => [row.frame, new Map(Object.entries(row.tracks).map(([track, key]) => [track, {
+		q: key.q?.map(q) ?? null, p: key.p ? p(key.p) : null,
+		...(key.baseQ ? { baseQ: key.baseQ.map(q) } : {}), ...(key.basePos ? { basePos: p(key.basePos) } : {}),
+		...(key.chainP ? { chainP: key.chainP.map(p) } : {}), ...(key.keepTranslations ? { keepTranslations: true } : {}),
+	}]))]));
+}
+
+// Plain intent owns take identities and JSON keys. Decoded buffers and rig
+// preimages are copy-on-record runtime resources, never mutable store values.
+export function createMotionDomain(appContext, characters) {
+	const takes = new Map(), decoded = new WeakMap(), rigImages = new WeakMap(), previews = new Map();
+	function snapshotTake(take) {
+		if (!take) return null;
+		if (take.resourceId) return { ...take };
+		const resourceId = crypto.randomUUID(), copy = structuredClone(take);
+		takes.set(resourceId, copy);
+		return { resourceId, frames: take.frames, fps: take.fps, url: take.url ?? null, prompt: take.prompt ?? '',
+			anchorX: take.anchorX ?? 0, anchorZ: take.anchorZ ?? 0, anchorFrame: take.anchorFrame ?? 0, rotationDeg: take.rotationDeg ?? 0,
+			editSegments: take.editSegments ?? createMotionEdit(take.frames), studioTakeId: take.studioTakeId ?? resourceId };
+	}
+	const normalize = rows => rows.map(row => ({ ...emptyMotionLayer(row.id), ...row,
+		take: snapshotTake(row.take), fullTake: snapshotTake(row.fullTake ?? row.take),
+		ikKeys: row.ikKeys ?? [], committedIkEdits: row.committedIkEdits ?? [] }));
+	let native = createDocumentStore({ owned: { motion: normalize(characters.map(entry => ({ id: entry.id }))) } });
+	const listeners = new Set(), notify = () => { for (const listener of listeners) listener(); };
+	let release = native.subscribe(notify), viewRevision = 0;
+	const documentStore = { ...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+	const read = () => documentStore.read('motion');
+	const layer = id => read().find(row => row.id === id) ?? emptyMotionLayer(id);
+	function materialize(take) {
+		if (!take) return null;
+		if (!decoded.has(take)) {
+			const { resourceId, ...metadata } = take;
+			decoded.set(take, { ...takes.get(resourceId), ...metadata });
+		}
+		return decoded.get(take);
+	}
+	const motionFor = id => materialize(layer(id).take), fullMotionFor = id => materialize(layer(id).fullTake);
+	const visibleMotion = id => previews.get(id) ?? motionFor(id);
+	const frame = () => appContext.live.state?.timeline.currentFrame ?? 0;
+	const rigFor = id => appContext.shared.rigs[id];
+	function rigSnapshots() {
+		return new Map(Object.entries(appContext.shared.rigs).map(([id, rig]) => [id, appContext.shared.snapshotExportRig(rig)]));
+	}
+	let publishedIds = new Set();
+	function project() {
+		const cast = appContext.storeDomain('cast'), states = appContext.shared.ikStatesRef.current, savedRigs = rigImages.get(read());
+		const ids = new Set([...publishedIds, ...read().map(row => row.id)]);
+		for (const id of ids) {
+			const row = layer(id), take = visibleMotion(id), full = fullMotionFor(id);
+			cast.publishMotion(id, take);
+			if (full) appContext.shared.motionFullRef.current.set(id, full); else appContext.shared.motionFullRef.current.delete(id);
+			const state = states.get(id) ?? createIkState();
+			state.keys = decodeMotionKeys(row.ikKeys); state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
+			states.set(id, state);
+			const rig = rigFor(id);
+			if (rig) {
+				const resolved = resolveIkRig(rig); if (resolved) Object.assign(state, resolved, { rig });
+				if (savedRigs?.has(id)) appContext.shared.restoreExportRig(savedRigs.get(id));
+				else if (resolved) {
+					if (take) applyMotionFrame(rig, take, Math.min(frame(), take.frames - 1));
+					else {
+						const character = cast.read().find(entry => entry.id === id);
+						restoreBindPositions(rig); applyPose(rig, { ...REST_BONES, ...(character?.pose ?? DEFAULT_POSE).bones });
+						applyHipsOffset(rig, character?.pose?.rootY ?? 0);
+					}
+					ikEvaluate(resolved.chains, state, frame(), resolved.fkJoints, take ? 6 : 0);
+				}
+			}
+		}
+		publishedIds = new Set(read().map(row => row.id));
+		const id = appContext.shared.loadedLayerCharRef.current;
+		appContext.shared.ikStateRef.current = states.get(id) ?? createIkState();
+		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion: visibleMotion(id), ik: appContext.shared.ikStateRef.current };
+		appContext.shared.takeRecipeRef.current = layer(id).takeRecipe;
+		domain.onProject?.(); viewRevision++;
+	}
+	const unsubscribe = documentStore.subscribe(project);
+	function write(update) {
+		return documentStore.write('motion', before => {
+			const next = normalize(typeof update === 'function' ? update(before) : update);
+			return sameMotionIntent(before, next) ? before : next;
+		});
+	}
+	function writeLayer(id, patch) {
+		return write(rows => rows.some(row => row.id === id) ? rows.map(row => row.id === id ? { ...row, ...patch } : row) : [...rows, { ...emptyMotionLayer(id), ...patch }]);
+	}
+	function beginAction() {
+		rigImages.set(read(), rigSnapshots());
+		const session = documentStore.beginAction('motion');
+		return { ...session, commit() { const result = session.commit(); rigImages.set(read(), rigSnapshots()); return result; } };
+	}
+	function setKeys(id, keys) { return writeLayer(id, { ikKeys: encodeMotionKeys(keys) }); }
+	function editKeys(id, mutate) {
+		const state = { ...createIkState(), keys: decodeMotionKeys(layer(id).ikKeys) };
+		state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
+		const result = mutate(state); setKeys(id, state.keys); return result;
+	}
+	function setKey(id, at, tracks) {
+		editKeys(id, state => {
+			const incoming = decodeMotionKeys([{ frame: at, tracks }]).get(at), entry = state.keys.get(at) ?? new Map();
+			for (const [track, key] of incoming) entry.set(track, key); state.keys.set(at, entry);
+		});
+	}
+	function castWrite(update) { return appContext.recordAction('cast', () => appContext.storeDomain('cast').write(update), null, true); }
+	function synchronizeTimeline() { appContext.storeDomain('cast').syncTimeline(); }
+	function replace(id, take, { fullTake = take, ikKeys = [], recipe = null, versions = layer(id).takeVersions } = {}) {
+		previews.delete(id);
+		writeLayer(id, { take: snapshotTake(take), fullTake: snapshotTake(fullTake), ikKeys, takeRecipe: recipe, takeVersions: versions, committedIkEdits: [] });
+		synchronizeTimeline();
+	}
+	function clear(id) {
+		previews.delete(id);
+		writeLayer(id, { take: null, fullTake: null, ikKeys: [], committedIkEdits: [], takeRecipe: null });
+		castWrite(rows => rows.map(row => row.id === id ? { ...row, scale: 1, motionRef: null } : row));
+		synchronizeTimeline();
+	}
+	function editSegments(id, segments) {
+		const full = fullMotionFor(id), take = motionFor(id);
+		if (!full || !take) throw new StudioProtocolError('TARGET_NOT_READY', 'This character has no take to edit.');
+		const previous = take.editSegments, rendered = { ...renderMotionEdit(full, segments), url: null };
+		const keys = remapFrameKeyMap(decodeMotionKeys(layer(id).ikKeys), previous, segments);
+		writeLayer(id, { take: snapshotTake(rendered), ikKeys: encodeMotionKeys(keys) });
+		castWrite(rows => rows.map(row => row.id !== id ? row : { ...row, layer: { ...row.layer,
+			promptClips: row.layer.promptClips.flatMap(clip => {
+				const start = remapTimelineFrame(previous, segments, clip.startFrame), end = remapTimelineFrame(previous, segments, clip.endFrame);
+				if (start === null && end === null) return [];
+				const startFrame = Math.max(0, Math.min(start ?? 0, rendered.frames - 1));
+				const endFrame = Math.max(0, Math.min(end ?? rendered.frames - 1, rendered.frames - 1));
+				return startFrame <= endFrame ? [{ ...clip, startFrame, endFrame }] : [];
+			}) } }));
+		synchronizeTimeline();
+	}
+	function fix(id, scope = 'frame') {
+		const rig = rigFor(id), resolved = rig && resolveIkRig(rig);
+		if (!resolved) throw new StudioProtocolError('TARGET_NOT_READY', 'The character rig is not loaded.');
+		const state = appContext.shared.ikStatesRef.current.get(id) ?? { ...createIkState(), ...resolved };
+		const blockers = at => collisionBlockers({ rigs: appContext.shared.rigs, activeId: id, characterIds: appContext.live.characters,
+			sceneObjects: appContext.ports.read().objects, library: OBJECT_LIBRARY, frame: at, take: { frameCount: motionFor(id)?.frames ?? 1, fps: 24 } });
+		if (scope === 'clip') {
+			const take = motionFor(id); if (!take) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take first.');
+			const originals = rigSnapshots();
+			try {
+				fixCollisionsRange({ rig, ...resolved, ikState: state, startFrame: 0, endFrame: take.frames - 1,
+					applyFrame(at) { applyMotionFrame(rig, take, at); ikEvaluate(resolved.chains, state, at, resolved.fkJoints, 6); },
+					blockersAt(at) { for (const row of read()) if (row.id !== id) appContext.shared.poseMemberAtFrame(rigFor(row.id), motionFor(row.id), appContext.shared.ikStatesRef.current.get(row.id), at, 6); return blockers(at); } });
+			} finally { for (const snapshot of originals.values()) appContext.shared.restoreExportRig(snapshot); }
+		} else {
+			const result = fixCollisions(rig, resolved.chains, { ikState: state, fkJoints: resolved.fkJoints, blockers: blockers(frame()) });
+			if (!result.supported) throw new StudioProtocolError('TARGET_NOT_READY', 'This rig does not support collision cleanup.');
+			if (result.changed) ikBakeKeyframe(resolved.chains, state, frame(), resolved.fkJoints, result.touched, null, result.baseQuats);
+		}
+		setKeys(id, state.keys);
+	}
+	function run(id, args) {
+		const result = appContext.bus.run(id, args);
+		const checked = receipt => { if (!receipt.ok) throw new StudioProtocolError(receipt.code, receipt.message); return receipt; };
+		return result?.then ? result.then(checked) : checked(result);
+	}
+	let gesture = null;
+	function finishGesture(cancel = false) {
+		if (!gesture) return;
+		const active = gesture; gesture = null; active.unsubscribe?.(); active.release?.();
+		if (active.txId) return run(cancel ? 'run.cancel' : 'run.commit', { txId: active.txId });
+	}
+	function beginGesture() {
+		if (gesture) return;
+		const commit = () => finishGesture(), cancel = () => finishGesture(true), key = event => { if (event.key === 'Escape') cancel(); };
+		const events = { pointerup: commit, pointercancel: cancel, blur: commit, keydown: key };
+		for (const [name, handler] of Object.entries(events)) globalThis.window?.addEventListener?.(name, handler);
+		gesture = { release() { for (const [name, handler] of Object.entries(events)) globalThis.window?.removeEventListener?.(name, handler); } };
+	}
+	function edit(id, args) {
+		if (!gesture) return run(id, args);
+		if (gesture.id && gesture.id !== id) { finishGesture(); beginGesture(); }
+		if (!gesture.txId) {
+			gesture.id = id; gesture.txId = run('run.begin', { id, args }).txId;
+			gesture.unsubscribe = appContext.bus.subscribe(event => { if (event.type === 'transaction.cancelled' && event.txId === gesture?.txId) { const current = gesture; gesture = null; current.unsubscribe(); current.release(); } });
+		}
+		return run('run.update', { txId: gesture.txId, args });
+	}
+	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
+		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction,
+		bindRender(context) { appContext = context; },
+		viewRevision: () => viewRevision, canUndo: id => documentStore.canUndo(id),
+		stepHistory: redo => { finishGesture(); return Boolean((redo ? documentStore.redo : documentStore.undo)()); },
+		document: () => ({ motion: read() }), sceneSlice: slices => slices.motion ?? slices.cast.map(entry => ({ id: entry.id })),
+		publish: rows => write(rows), commitDraft: write,
+		switchLayer(id) { appContext.shared.loadedLayerCharRef.current = id; project(); notify(); },
+		snapshotLegacy: () => read(), restoreLegacy: write,
+		removeLayer(id) { write(rows => rows.filter(row => row.id !== id)); },
+		preview(id, take) { if (take) previews.set(id, take); else previews.delete(id); project(); notify(); },
+		load(rows) { finishGesture(true); previews.clear(); release(); native.dispose(); native = createDocumentStore({ owned: { motion: normalize(rows) } }); release = native.subscribe(notify); notify(); },
+		dispose() { finishGesture(true); unregister(); unsubscribe(); release(); native.dispose(); listeners.clear(); takes.clear(); },
+	};
+	const unregister = appContext.registerStoreDomain('motion', domain);
+	return domain;
+}
+
 export function useMotion(appContext) {
+	const [domain] = useState(() => appContext.storeDomain('motion') ?? createMotionDomain(appContext, appContext.shared.characters));
+	domain.bindRender(appContext);
+	useDocumentDomain(domain.documentStore, 'motion');
+	useSyncExternalStore(domain.documentStore.subscribe, domain.viewRevision, domain.viewRevision);
+	useEffect(() => {
+		domain.switchLayer(appContext.shared.activeChar.id);
+		const start = () => domain.beginGesture(); window.addEventListener('pointerdown', start, true);
+		return () => { window.removeEventListener('pointerdown', start, true); domain.finishGesture(true); };
+	}, [domain, appContext.shared.activeChar.id]);
 	const [falMotion, setFalMotion] = useState({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", dailyRemaining: null });
 	/* ------------------------------ IK layer ------------------------------ */
 	// IK posing for Subject 1: dragging a wrist/ankle handle FOCUSES that
@@ -147,7 +372,9 @@ export function useMotion(appContext) {
 
 	const [ikTick, setIkTick] = useState(0);
 
-	const [committedIkEdits, setCommittedIkEdits] = useState([]);
+	const committedIkEdits = domain.layer(appContext.shared.activeChar.id).committedIkEdits;
+	const setCommittedIkEdits = update => domain.writeLayer(appContext.shared.activeChar.id, { committedIkEdits: typeof update === 'function' ? update(domain.layer(appContext.shared.activeChar.id).committedIkEdits) : update });
+	domain.onProject = () => setIkTick(value => value + 1);
 
 	/* --------------------- IK-mode motion trail editing ---------------------
 	 * Grabbing the viewport trajectory line deforms the loaded take with a
@@ -182,7 +409,9 @@ export function useMotion(appContext) {
 	function editIkKeys(mutate) {
 		const before = snapshotIkKeys(appContext.shared.ikStateRef.current);
 		const result = mutate();
-		appContext.shared.markSemanticEdit("pose", before, appContext.shared.ikStateRef.current.keys);
+		const owned = appContext.storeDomain('motion');
+		if (owned) owned.setKeys(appContext.shared.loadedLayerCharRef.current, appContext.shared.ikStateRef.current.keys);
+		else appContext.shared.markSemanticEdit("pose", before, appContext.shared.ikStateRef.current.keys);
 		return result;
 	}
 
@@ -198,6 +427,7 @@ export function useMotion(appContext) {
 	}
 
 	function editCharacterIkKeys(characterId, mutate) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').editKeys(characterId, mutate);
 		const state = ikStateFor(characterId);
 		const before = snapshotIkKeys(state);
 		appContext.shared.castDomain.recordCharacterUndo();
@@ -210,6 +440,7 @@ export function useMotion(appContext) {
 	 * each named track replaces its key at `frame` and joins the tracked set. */
 	function setCharacterIkKey(characterId, frame, tracks) {
 		appContext.shared.castMemberOf(characterId);
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').setKey(characterId, frame, tracks);
 		const quaternion = (q) => new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize();
 		const vector = (p) => new THREE.Vector3(p.x, p.y, p.z);
 		editCharacterIkKeys(characterId, (state) => {
@@ -309,9 +540,10 @@ export function useMotion(appContext) {
 	 * The ref shadows the state because the recipe is consulted from inside an
 	 * async job completion, where a stale closure would silently record the
 	 * previous take's edits against this take's url. */
-	const [takeRecipe, setTakeRecipe] = useState(null);
-
-	const [takeVersions, setTakeVersions] = useState([]);
+	const takeRecipe = domain.layer(appContext.shared.activeChar.id).takeRecipe;
+	const setTakeRecipe = value => domain.writeLayer(appContext.shared.activeChar.id, { takeRecipe: value });
+	const takeVersions = domain.layer(appContext.shared.activeChar.id).takeVersions;
+	const setTakeVersions = update => domain.writeLayer(appContext.shared.activeChar.id, { takeVersions: typeof update === 'function' ? update(domain.layer(appContext.shared.activeChar.id).takeVersions) : update });
 
 	// Which C10 replay entries came back failed or boundary-warned. Non-blocking
 	// by contract: the take generated, one refinement may not have survived it,
@@ -348,7 +580,13 @@ export function useMotion(appContext) {
 	const [lineEditBackend, setLineEditBackend] = useState(false);
 
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
-	const [motion, setMotion] = useState(null);
+	const motion = domain.visibleMotion(appContext.shared.activeChar.id);
+	const setMotion = value => {
+		const id = appContext.shared.loadedLayerCharRef.current, before = domain.motionFor(id);
+		const next = typeof value === 'function' ? value(before) : value;
+		if (next === before) return;
+		domain.writeLayer(id, { take: domain.snapshotTake(next), fullTake: domain.snapshotTake(appContext.shared.motionFullRef.current.get(id) ?? next) });
+	};
 
 	const [motionBusy, setMotionBusy] = useState(false);
 
@@ -956,6 +1194,7 @@ export function useMotion(appContext) {
 	 * first and then write the pose: the snapshot taken here predates both, so
 	 * one undo restores the take AND the pose it replaced. */
 	function clearMotion() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').clear(appContext.shared.activeChar.id);
 		if (!motion && appContext.shared.ikStateRef.current.keys.size === 0 && (appContext.shared.activeChar.scale ?? 1) === 1) return;
 		appContext.shared.castDomain.recordCharacterUndo();
 		setMotion(null);
@@ -992,6 +1231,7 @@ export function useMotion(appContext) {
 	 *  and IK-edit regeneration must not pretend they do. Per-character layers
 	 *  mean the cut lands on this layer only; nobody else's clip moves. */
 	function applyMotionTrim(start, end) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').edit('motion.trim', { characterId: appContext.shared.activeChar.id, start, end });
 		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
 		if (!full || !motion) return;
 		// One Ctrl+Z entry per edit: the cast snapshot carries the pre-edit clip
@@ -1014,6 +1254,7 @@ export function useMotion(appContext) {
 	}
 
 	function resetMotionTrim() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.resetTrim', { characterId: appContext.shared.activeChar.id });
 		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
 		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
 		appContext.shared.castDomain.recordCharacterUndo();
@@ -1064,6 +1305,7 @@ export function useMotion(appContext) {
 	}
 
 	function cutMotionAtPlayhead() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.cut', { characterId: appContext.shared.activeChar.id, frame: appContext.shared.tlFrame });
 		if (!motion) return;
 		const current = motion.editSegments ?? createMotionEdit(appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id)?.frames ?? motion.frames);
 		const next = splitMotionEdit(current, appContext.shared.tlFrame);
@@ -1073,6 +1315,7 @@ export function useMotion(appContext) {
 	}
 
 	function changeMotionSegmentSpeed(id, speed) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.setSegmentSpeed', { characterId: appContext.shared.activeChar.id, id, speed });
 		if (!motion) return;
 		const current = motion.editSegments ?? createMotionEdit(appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id)?.frames ?? motion.frames);
 		editMotionSegments(setMotionSegmentSpeed(current, id, speed));
@@ -1083,6 +1326,7 @@ export function useMotion(appContext) {
 	 * trim: the source frames stay untouched, so the trim-reset path (right-click
 	 * an outer handle) still restores the whole take. */
 	function removeMotionSegmentById(id) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.removeSegment', { characterId: appContext.shared.activeChar.id, id });
 		if (!motion) return;
 		const current = motion.editSegments ?? createMotionEdit(appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id)?.frames ?? motion.frames);
 		if (current.length <= 1) {
@@ -1295,6 +1539,7 @@ export function useMotion(appContext) {
 	});
 
 	function runFixCollisions() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.fixCollisions', { characterId: appContext.shared.activeChar.id, scope: 'frame' });
 		if (!ikChains || !appContext.shared.activeRig) return;
 		// A rig swap leaves one render where ikChains still describes the old
 		// skeleton; solving the new rig with them would push the wrong bones.
@@ -1321,6 +1566,7 @@ export function useMotion(appContext) {
 	// Whole-clip variant: walk the motion frame by frame, clean each pose and
 	// key ONLY the frames that changed, so a clean clip stays keyless.
 	function runFixCollisionsRange() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.fixCollisions', { characterId: appContext.shared.activeChar.id, scope: 'clip' });
 		if (!ikChains || !appContext.shared.activeRig || !motion) return;
 		if (appContext.shared.ikStateRef.current.rig !== appContext.shared.activeRig) return;
 		// Screened before the undo entry: an unsupported rig would record an
@@ -3015,8 +3261,9 @@ export function useMotion(appContext) {
 		return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
 	}
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
-	appContext.updateActionPorts({ clearMotionNative: clearMotion });
+	appContext.updateActionPorts({ clearMotionNative: clearMotion, setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys });
 	return {
+		...domain,
 		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion, loadLiveMotion, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
 		bodyContact, setBodyContact, IK_CORRECTION_BLEND_FRAMES, autoPhysicsRunning, setAutoPhysicsRunning,
