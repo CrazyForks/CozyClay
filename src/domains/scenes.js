@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { createDocumentStore } from "../document-store.js";
+import { useDocumentDomain } from "../store/use-document-store.js";
 import {
 	SCENES_STORAGE_KEY,
 	readSceneDocument,
@@ -52,14 +54,86 @@ import { withCommandHistory } from "../command-bus.js";
 import { createSceneHistoryStore } from "../scene-history.js";
 import { createIkState } from "../ardy/ik.js";
 
-export function useScenes(appContext) {
-	// Scene persistence (plan §8): the startup load runs once in a lazy
-	// initializer so the store below can seed from the restored scene; the
-	// quarantine write and the save-block decision happen before the first
-	// render, and the toast/error they produce ride along as initial UI state.
-	const [scenes, setScenes] = useState(appContext.shared.startup.document.scenes);
+// The scene list and project identity share one history. Dirty is derived from
+// the saved checkpoint, not an authored edit, and has its own non-history slice.
+export function createScenesDomain(appContext, initial, name) {
+	const ordered = rows => rows.map((scene, order) => ({ ...scene, order }));
+	let native = createDocumentStore({ owned: { scenes: ordered(initial.scenes), project: { name, activeSceneId: initial.activeSceneId } } });
+	const listeners = new Set();
+	const notify = () => { for (const listener of listeners) listener(); };
+	let release = native.subscribe(notify);
+	const documentStore = {
+		...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+	};
+	const dirtyStore = createDocumentStore({ owned: { projectDirty: false } });
+	const read = () => documentStore.read("scenes"), metadata = () => documentStore.read("project");
+	function write(rows) {
+		return documentStore.write("scenes", before => {
+			let next = typeof rows === "function" ? rows(before) : rows;
+			// Generic collection set preserves array position until the owner
+			// consumes an order intent. Semantic reorder uses this same path.
+			for (const row of next.filter(row => before.find(item => item.id === row.id)?.order !== row.order)) {
+				const index = next.findIndex(item => item.id === row.id);
+				next = next.filter(item => item.id !== row.id);
+				next.splice(Math.min(next.length, Math.max(0, Math.round(row.order ?? index))), 0, row);
+			}
+			for (let index = 0; index < next.length; index++) {
+				const previous = before.find(row => row.id === next[index].id);
+				if (previous && previous.name !== next[index].name) {
+					const requested = next[index].name;
+					next = next.map((row, i) => i === index ? { ...row, name: previous.name } : row);
+					next = renameScene(next, index, requested);
+				}
+			}
+			next = ordered(next);
+			return JSON.stringify(next) === JSON.stringify(before) ? before : next;
+		});
+	}
+	const publish = () => {
+		appContext.publishScenes(read());
+		appContext.shared.activeSceneIdRef.current = metadata().activeSceneId;
+		if (appContext.live.state) appContext.patchLive({ scenes: read(), activeSceneId: metadata().activeSceneId });
+		storeProjectSession(metadata().name);
+		domain.persist?.();
+		domain.refreshDirty?.();
+	};
+	const unsubscribe = documentStore.subscribe(publish);
+	const domain = {
+		documentStore, dirtyStore, read, write, metadata,
+		setScenes: write,
+		beginAction: () => documentStore.beginAction("scenes"),
+		canUndo: id => documentStore.canUndo(id),
+		stepHistory: redo => Boolean((redo ? documentStore.redo : documentStore.undo)()),
+		publish: state => write(state.scenes), commitDraft: write,
+		document: () => ({ scenes: domain.snapshot(), project: { ...metadata(), name: metadata().name ?? "Untitled" } }),
+		renameProject(name) {
+			documentStore.write("project", before => before.name === name.trim() ? before : { ...before, name: name.trim() });
+		},
+		// Session cache/file loads are explicit non-authored boundaries. They
+		// retire scene history, just as opening a scene retired native history.
+		replaceDocument(scenes, activeSceneId, name = metadata().name) {
+			release(); native.dispose();
+			native = createDocumentStore({ owned: { scenes: ordered(scenes), project: { name, activeSceneId } } });
+			release = native.subscribe(notify); notify();
+		},
+		setDirty(value) {
+			if (dirtyStore.read("projectDirty") === value) return;
+			const boundary = dirtyStore.beginAction("projectDirty");
+			boundary.run(() => dirtyStore.write("projectDirty", value));
+			boundary.cancel({ restore: false });
+		},
+		dispose() { unregister(); unsubscribe(); release(); native.dispose(); dirtyStore.dispose(); listeners.clear(); },
+	};
+	const unregister = appContext.registerStoreDomain("scenes", domain);
+	return domain;
+}
 
-	const [activeSceneId, setActiveSceneId] = useState(appContext.shared.startup.document.activeSceneId);
+export function useScenes(appContext) {
+	const [domain] = useState(() => appContext.storeDomain("scenes") ?? createScenesDomain(appContext, appContext.shared.startup.document, loadProjectSession()?.name ?? null));
+	const scenes = useDocumentDomain(domain.documentStore, "scenes");
+	const { activeSceneId, name: projectName } = useDocumentDomain(domain.documentStore, "project");
+	const projectDirty = useDocumentDomain(domain.dirtyStore, "projectDirty");
 
 	const [sceneSaveError, setSceneSaveError] = useState(appContext.shared.startup.error);
 
@@ -100,10 +174,6 @@ export function useScenes(appContext) {
 	 * workspace layout, custom poses) round-trips through a real
 	 * `.cclayproject` file. localStorage stays as the always-on session
 	 * cache; the file is the portable, user-owned document. */
-	const [projectName, setProjectName] = useState(() => loadProjectSession()?.name ?? null);
-
-	const [projectDirty, setProjectDirty] = useState(false);
-
 	const [projectSaveState, setProjectSaveState] = useState("idle");
 
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -208,8 +278,8 @@ export function useScenes(appContext) {
 
 	function markProjectClean(name) {
 		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
-		setProjectDirty(false);
-		setProjectName(name);
+		domain.replaceDocument(domain.read(), domain.metadata().activeSceneId, name);
+		domain.setDirty(false);
 		storeProjectSession(name);
 	}
 
@@ -314,8 +384,7 @@ export function useScenes(appContext) {
 			? { ...source, version: SCENES_VERSION, scenes: source.scenes.map((scene) => ({ ...scene, stage: migrateStageFrames(scene.stage) })) }
 			: source;
 		const mergedCustomPoses = mergeProjectCustomPoses(appContext.shared.customPoses, project.customPoses);
-		setScenes(doc.scenes);
-		setActiveSceneId(doc.activeSceneId);
+		domain.replaceDocument(doc.scenes, doc.activeSceneId, project.name);
 		if (project.workspaceLayout) appContext.shared.setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
 		appContext.shared.setCustomPoses(mergedCustomPoses);
 		const resolvedWorkflow = resolveWorkflowOutputs(normalizeWorkflowGraph(project.workflow), new Map((project.assets ?? []).map((asset) => [asset.id, asset])));
@@ -324,8 +393,7 @@ export function useScenes(appContext) {
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
 		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(project.name);
-		setProjectDirty(false);
-		setProjectName(project.name);
+		domain.setDirty(false);
 		storeProjectSession(project.name);
 		setProjectStartupOpen(false);
 		// Whatever document this is, it is no longer the scene the tutorial opened
@@ -426,8 +494,7 @@ export function useScenes(appContext) {
 		setProjectNameDialog(null);
 		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
 		storeWorkflowGraph(createWorkflowGraph());
-		setScenes(fresh.scenes);
-		setActiveSceneId(fresh.activeSceneId);
+		domain.replaceDocument(fresh.scenes, fresh.activeSceneId, name);
 		persistScenes(fresh.scenes, fresh.activeSceneId);
 		openScene(fresh.scenes[0], fresh.scenes);
 		appContext.shared.projectHandleRef.current = null;
@@ -439,8 +506,7 @@ export function useScenes(appContext) {
 			workflow: createWorkflowGraph(),
 			name,
 		}));
-		setProjectDirty(false);
-		setProjectName(name);
+		domain.setDirty(false);
 		storeProjectSession(name);
 		setProjectStartupOpen(false);
 		appContext.shared.setFirstSuccessGuideOpen(true);
@@ -531,8 +597,7 @@ export function useScenes(appContext) {
 		appContext.shared.setSelectedHierarchyId("shot");
 		appContext.publishScenes(nextScenes);
 		appContext.shared.activeSceneIdRef.current = scene.id;
-		setScenes(nextScenes);
-		setActiveSceneId(scene.id);
+		appContext.storeDomain("scenes")?.replaceDocument(nextScenes, scene.id);
 		track("scene:loaded", { scene_source: "local" });
 	}
 
@@ -581,8 +646,9 @@ export function useScenes(appContext) {
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
 		const nextScenes = renameScene(savedScenes, index, name);
-		appContext.publishScenes(nextScenes);
-		setScenes(nextScenes);
+		const owned = appContext.storeDomain("scenes");
+		if (owned) owned.write(nextScenes);
+		else { appContext.publishScenes(nextScenes); appContext.shared.setScenes(nextScenes); }
 		persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
 	}
 
@@ -592,8 +658,8 @@ export function useScenes(appContext) {
 		if (index < 0 || savedScenes.length <= 1) return;
 		const nextScenes = removeScene(savedScenes, index);
 		if (sceneId !== appContext.shared.activeSceneIdRef.current) {
+			appContext.storeDomain("scenes")?.replaceDocument(nextScenes, appContext.shared.activeSceneIdRef.current);
 			appContext.publishScenes(nextScenes);
-			setScenes(nextScenes);
 			persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
 			return;
 		}
@@ -627,8 +693,7 @@ export function useScenes(appContext) {
 		if (JSON.stringify(currentStage ?? null) !== JSON.stringify(incomingStage)) {
 			appContext.shared.castDomain.applyExternalCharacters(incomingStage.characters);
 		}
-		appContext.publishScenes(nextScenes);
-		setScenes(nextScenes);
+		domain.replaceDocument(nextScenes, incomingScene.id);
 	}
 	function loadLiveScenes(args) {
 		if (!args.document || typeof args.document !== "object" || Array.isArray(args.document)) throw new Error("Invalid scene document");
@@ -651,17 +716,19 @@ export function useScenes(appContext) {
 		};
 	}
 	function refreshProjectDirty() {
-		if (projectName === null) return; // untitled sessions are never "dirty"
-		const serialized = collectProjectSnapshot(projectName);
-		const dirty = serialized !== appContext.shared.projectSnapshotRef.current;
-		setProjectDirty(dirty);
+		const name = domain.metadata().name;
+		const dirty = name !== null && collectProjectSnapshot(name) !== appContext.shared.projectSnapshotRef.current;
+		domain.setDirty(dirty);
 		setProjectSaveState((current) => current === "saving" ? current : dirty ? "dirty" : "saved");
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}
+	domain.snapshot = snapshotActiveScene;
+	domain.persist = () => persistScenes(snapshotActiveScene(), domain.metadata().activeSceneId);
+	domain.refreshDirty = refreshProjectDirty;
 	return {
-		applyExternalScene, loadLiveScenes, refreshProjectDirty,
-		scenes, setScenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
-		projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
+		...domain, applyExternalScene, loadLiveScenes, refreshProjectDirty,
+		scenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
+		projectDirty, setProjectDirty: domain.setDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
 		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,
 		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
 		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,

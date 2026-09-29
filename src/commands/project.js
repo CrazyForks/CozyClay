@@ -6,9 +6,16 @@
 import { studioActionDeclaration } from "../studio-actions.js";
 import { fail } from "./shared.js";
 
-export const declarations = Object.freeze(["project.save"].map(studioActionDeclaration));
+const rename = { id: "project.rename", label: "Rename project", description: "Rename the project in one retained undo entry.", kind: "mutation", undoDomain: "scenes",
+	input: { type: "object", properties: { name: { type: "string", minLength: 1, maxLength: 240 } }, required: ["name"], additionalProperties: false } };
+export const declarations = Object.freeze([rename, ...["project.save"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
+	registry.register({ ...rename, available: () => Boolean(ports.storeDomain?.("scenes")), run: ({ name }) => {
+		if (!name.trim()) fail("INVALID_ARGUMENT", "A project name cannot be blank.");
+		const owner = ports.storeDomain("scenes"); owner.renameProject(name);
+		return { affectedIds: [owner.metadata().activeSceneId], summary: "Renamed project." };
+	} });
 	registry.register({ ...studioActionDeclaration("project.save"), available: () => true,
 		requiresConfirmation: state => state.project.hasFile || state.project.fileAccess,
 		run: async () => {

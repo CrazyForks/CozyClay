@@ -3,14 +3,33 @@
 // rendered the new room, so the next command reads that scene's state.
 import { studioActionDeclaration } from "../studio-actions.js";
 import { fail } from "./shared.js";
+import { elementSetSchema, registerElementSet } from "./elements.js";
+import "./elements/scene.js";
 
-export const declarations = Object.freeze(["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"].map(studioActionDeclaration));
+const mutation = (id, label, input) => ({ id, label, description: label, kind: "mutation", undoDomain: "scenes", input });
+const set = mutation("scene.set", "Set scene name or order", elementSetSchema("scene"));
+const reorder = mutation("scene.reorder", "Reorder a scene", { type: "object", properties: {
+	sceneId: studioActionDeclaration("scene.rename").input.properties.sceneId, order: { type: "number" },
+}, required: ["sceneId", "order"], additionalProperties: false });
+export const declarations = Object.freeze([set, reorder,
+	...["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"].map(id => {
+		const declaration = studioActionDeclaration(id);
+		return id === "scene.rename" ? { ...declaration, kind: "mutation", undoDomain: "scenes", description: "Rename a scene in one retained undo entry." } : declaration;
+	}),
+]);
 
 export function register(registry, ports) {
+	registerElementSet(registry, ports, set);
+	registry.register({ ...reorder, available: () => Boolean(ports.storeDomain?.("scenes")), run: ({ sceneId, order }) => {
+		const owner = ports.storeDomain("scenes");
+		if (!owner.read().some(row => row.id === sceneId)) fail("STALE_TARGET", `Scene ${sceneId} is not in this project.`);
+		owner.write(owner.read().map(row => row.id === sceneId ? { ...row, order } : row));
+		return { affectedIds: [sceneId], summary: "Reordered scene." };
+	} });
 	const sceneOf = sceneId => ports.state().scenes.find(scene => scene.id === sceneId) ?? fail("STALE_TARGET", `Scene ${sceneId} is not in this project.`);
 	const sceneName = scene => `${scene.name} (${scene.id})`;
 	const sceneAction = (id, available, run) => registry.register({ ...studioActionDeclaration(id), available,
-		run: async args => {
+		run: args => {
 			const before = ports.state(), describe = run(args, before), after = ports.state();
 			const moved = after.activeSceneId !== before.activeSceneId, opened = after.scenes.find(scene => scene.id === after.activeSceneId);
 			const affectedIds = [...new Set([
@@ -18,8 +37,8 @@ export function register(registry, ports) {
 				...before.scenes.filter(scene => !after.scenes.some(row => row.id === scene.id)).map(scene => scene.id),
 				...(moved ? [after.activeSceneId] : []),
 			])];
-			if (moved) await ports.afterRender();
-			return { affectedIds, summary: describe(after, opened, moved) };
+			const result = { affectedIds, summary: describe(after, opened, moved) };
+			return moved ? ports.afterRender().then(() => result) : result;
 		} });
 	const manyScenes = state => state.scenes.length > 1;
 	sceneAction("scene.create", () => true, () => {
