@@ -42,6 +42,7 @@ const NODE_FILES = [
 	"test/verify-obs-remote.mjs",
 	"test/verify-obs-ladder.mjs",
 	"test/verify-obs-isolation.mjs",
+	"test/verify-scene-continuity.mjs",
 	"test/verify-cube-contact.mjs",
 	"test/ardy/verify-key-runs.mjs",
 	"test/ardy/verify-playback-skinning.mjs",
