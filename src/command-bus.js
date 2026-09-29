@@ -227,8 +227,13 @@ export function createCommandBus({ registry, ports }) {
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
       const domain = entry.domain ?? entry.undoDomain;
       const targetId = entry.target?.(validated, before) ?? validated.characterId ?? validated.shotId ?? validated.objectId;
-      const token = targetId ? ports.readTarget?.(targetId) : null;
-      const domainRevision = domain ? before.domainRevisions?.[domain] : null;
+      let token = targetId ? ports.readTarget?.(targetId) : null;
+      let domainRevision = domain ? before.domainRevisions?.[domain] : null;
+      const rebase = () => {
+        const current = ports.read();
+        token = targetId ? ports.readTarget?.(targetId) : null;
+        domainRevision = domain ? current.domainRevisions?.[domain] : null;
+      };
       const nestedIds = new Set();
       const context = { origin: request.origin, signal: controller.signal,
         check() {
@@ -245,11 +250,19 @@ export function createCommandBus({ registry, ports }) {
           return recorded.result;
         },
         run(nestedId, nestedArgs = {}) {
-          controller.signal.throwIfAborted();
+          if (job) context.check(); else controller.signal.throwIfAborted();
           const nested = registry.prepare(nestedId, nestedArgs); exposure(nested.entry, nested.args, request);
           const invoke = () => registry.invoke(nested.entry, nested.args, context);
           const value = nested.entry.kind === 'mutation' ? ports.recordAction(nested.entry.undoDomain, invoke, nested.args.characterId ?? null, true) : { result: invoke() };
-          return mapResult(value, recorded => mapResult(recorded.result, result => { for (const target of result.affectedIds) nestedIds.add(target); return result; }));
+          // Only the synchronous owned step may advance the fence. Never absorb
+          // an external edit while an asynchronous nested step is suspended;
+          // its later publication must itself use context.run/commit.
+          if (job) rebase();
+          return mapResult(value, recorded => mapResult(recorded.result, result => {
+            if (job) { context.check(); rebase(); applied ||= Boolean(recorded.historyEntryId); }
+            for (const target of result.affectedIds) nestedIds.add(target);
+            return result;
+          }));
         },
       };
       if (entry.kind === 'job') { job = { id: crypto.randomUUID(), host: before.host, controller, background: false }; jobs.set(job.id, job); }
