@@ -437,7 +437,6 @@ export function useScenes(appContext) {
 	 * first-run dialog and by `npx cozyclay --scene <id>` (`?scene=`), which is
 	 * how the landing-page tutorial hands people into the local studio. */
 	async function openStarterScene(id, source = "starter", context = null) {
-		if (!context) return (await runProject("project.openStarter", { id, source })).output?.opened === true;
 		const before = source === "tutorial" ? collectProjectSnapshot("Tutorial") : null;
 		const epoch = appContext.shared.tutorialProjectEpochRef.current;
 		const url = playgroundSceneUrl(`?scene=${encodeURIComponent(id)}`);
@@ -449,7 +448,7 @@ export function useScenes(appContext) {
 			appContext.notify(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"));
 			return false;
 		}
-		context.check();
+		context?.check();
 		applyProject({ ...project, savedAt: null }, true);
 		appContext.shared.projectHandleRef.current = null;
 		track("scene:loaded", { scene_source: source });
@@ -808,7 +807,8 @@ export function useScenes(appContext) {
 		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
 		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,
 		collectProjectSerialized, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
-		openStarterScene, openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
+		openStarterScene: async (id, source = "starter") => (await runProject("project.openStarter", { id, source })).output?.opened === true,
+		openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
 		setRestoreOffer, restoreStoredProject, flushScenes, openScene, selectSceneDocument,
 		createSceneDocumentFromUi, duplicateSceneDocumentFromUi, renameSceneDocumentFromUi,
 		deleteSceneDocumentFromUi, switchSceneDocument, addSceneDocument, duplicateSceneDocument,
