@@ -26,9 +26,14 @@ export function createAppContext({
   const ready = (entry, redo) => !activeComposition && entry === frontier(redo) && retained(entry)
     && entry.members.every(row => redo ? row.store.canRedo() && row.store.history().future[0]?.historyEntryId === row.id : row.store.canUndo(row.id));
   function prune() {
-    // A partially expired composition remains a boundary: surviving members
-    // cannot become separate, partially undoable edits.
-    for (const [id, entry] of entries) if (!entry.members.some(memberRetained)) entries.delete(id);
+    // The oldest store snapshot has no pre-image, but is still a boundary.
+    // Keep it (and partially expired compositions) so traversal cannot skip
+    // an unundoable newer transition to reach an older owner.
+    for (const [id, entry] of entries) if (!entry.members.some(row => {
+      if (storeDomain(row.name) !== row.handle) return false;
+      const history = row.store.history();
+      return row.store.isRetained(row.id) || (history.past[0] ?? history.present).historyEntryId === row.id;
+    })) entries.delete(id);
     past = past.filter(entry => entries.has(entry.id));
     future = future.filter(entry => entries.has(entry.id));
   }
