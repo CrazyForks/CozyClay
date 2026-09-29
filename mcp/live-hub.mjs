@@ -294,6 +294,7 @@ export class LiveHub {
 		let appliedEmitted = false;
 		let failure = null;
 		let description;
+		let studioContext;
 		let mutation;
 		let acknowledgedMutation = false;
 		const emitApplied = () => {
@@ -304,14 +305,30 @@ export class LiveHub {
 		const observer = {
 			hub: this, handle,
 			before(command) {
-				if (!LiveHub.commandMayMutate(command) || command === "load_motion") return false;
+				if (!LiveHub.commandMayMutate(command) || command === "load_motion" || command === "run_action") return false;
 				mutation = { name: command, before: mutationState(command, description), acknowledged: false };
 				description = undefined;
 				return mutation.before === undefined;
 			},
 			baseline(value) { if (mutation) mutation.before = mutationState(mutation.name, value); },
 			receipt(command, value) {
-				if (command === "describe") {
+				if (command === "inspect_studio") {
+					studioContext = value?.context;
+				} else if (command === "run_action") {
+					// The bus attests application itself. No legacy describe diff or
+					// post-ack read may turn an admitted refusal into uncertainty.
+					if (value?.ok === false) {
+						failure = value.mutated === "unknown" || value.code === "UNCERTAIN_APPLY" ? "uncertain" : "failed";
+					} else if (value?.ok === true) {
+						acknowledgedMutation = true;
+						// A journal replay has already reached its after revision; it
+						// does not count as another application on this invocation.
+						if (studioContext && ((value.authored && value.revision.after > studioContext.revision.scene) ||
+							(value.nextHost && ["workspaceId", "documentEpoch", "sceneId", "sceneEpoch"].some(key => value.nextHost[key] !== studioContext.host[key])))) applied = true;
+						if (value.output?.rolledBack === true || value.output?.failed?.length > 0) failure = "failed";
+					}
+					studioContext = undefined;
+				} else if (command === "describe") {
 					if (mutation?.acknowledged && !mutation.rolledBack) {
 						const after = mutationState(mutation.name, value);
 						if (mutation.before !== undefined && after !== undefined && !isDeepStrictEqual(mutation.before, after)) applied = true;
@@ -346,6 +363,7 @@ export class LiveHub {
 			emitApplied();
 			// Never retain scene data with an asynchronous motion job.
 			description = undefined;
+			studioContext = undefined;
 			mutation = null;
 		});
 		emit("mcp:tool_requested", { request_id: requestId, tool_category: category });

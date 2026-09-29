@@ -1667,18 +1667,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					label: z.string().min(1).default("MCP batch").describe("the single editor undo entry name"),
 				},
 			},
-			async ({ ops, atomic, stopOnError, label }) => {
+			async ({ ops, atomic, stopOnError, label, ...admission }) => {
 				if (!liveHub?.connected) return text(noLiveEditor("apply_batch requires a connected CozyClay editor."));
 				try {
-					const result = await appliedLiveMutation("apply_batch", { ops, atomic, stopOnError, label });
-					const applied = Array.isArray(result?.applied) ? result.applied : [];
-					const failed = Array.isArray(result?.failed) ? result.failed : [];
-					const failure = failed[0];
-					const summary = result?.rolledBack
-						? `Batch rolled back after failure at operation ${failure?.index ?? "unknown"}.`
-						: `Applied ${applied.length} operation(s).`;
-					const detail = failure ? ` Failure at operation ${failure.index}: ${failure.error}.` : "";
-					return text(`${summary}${detail}\n\n${sceneReport()}`);
+					// #446: the v1 alias is objects-only, so objects.batch (not a
+					// generic run.batch) preserves its options and single undo entry.
+					return await runStudioCommand({ ...admission, action: "objects.batch", args: { ops, atomic, stopOnError, label } });
 				} catch (error) {
 					return liveError(error);
 				}
