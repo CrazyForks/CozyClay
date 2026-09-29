@@ -32,6 +32,8 @@ import { loadMotionFromUrl } from "../ardy/npz.js";
 import { snapshotPlaybackBones, applyMotionFrame, restorePlaybackBones } from "../ardy/playback.js";
 import { movePromptClipFrames } from "../ardy/prompt-clips.js";
 
+import { HISTORY_LIMIT } from "../history.js";
+
 export function useCast(appContext) {
 	// The cast is ONE list now: every character (position, rig model, pose,
 	// subject line) lives in `characters`, and the legacy A/B view of the
@@ -828,7 +830,110 @@ export function useCast(appContext) {
 		editPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
+	function beginNativeStudioAction(domain, targetId = null) {
+		if (appContext.shared.studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
+		const historyEntryId = crypto.randomUUID(), objects = appContext.shared.storeRef.current.objects;
+		const history = appContext.castHistory, past = [...history.past], future = [...history.future], states = [];
+		let objectSession, changed = false, firstEntry;
+		const session = {
+			touch(domain, targetId) {
+				if (domain === "objects") { objectSession ??= appContext.shared.storeRef.current.beginCommand(); return; }
+				if (!states.some(row => row.domain === domain && row.targetId === targetId)) states.push({ domain, targetId, state: appContext.shared.snapshotStudioDomain(domain, targetId) });
+			},
+			run(fn) {
+				const finish = result => {
+					const added = history.past.filter(entry => !past.includes(entry));
+					firstEntry ??= added[0]; changed ||= added.length > 0;
+					history.past = [...past]; history.future = [...future];
+					return result;
+				};
+				const result = objectSession ? objectSession.run(fn) : fn();
+				return result?.then ? result.then(finish) : finish(result);
+			},
+			commit() {
+				const objectsChanged = objectSession?.commit() ?? false;
+				appContext.patchLive({ objects: appContext.shared.storeRef.current.objects });
+				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
+				if (changed || (compound && objectsChanged)) {
+					const tick = appContext.nextTick(), saved = states[0];
+					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
+					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? appContext.shared.snapshotCast(true), studio: { ...studio, historyEntryId, objects: appContext.shared.storeRef.current.objects } });
+					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
+					appContext.shared.studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
+				} else if (objectsChanged) appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: appContext.objectClock, depth: appContext.shared.storeRef.current.depths().past });
+				changed ||= objectsChanged;
+				appContext.shared.studioActionGroupRef.current = null;
+				return { historyEntryId: changed ? historyEntryId : null };
+			},
+			cancel({ restore = true } = {}) {
+				objectSession?.cancel();
+				if (restore) {
+					for (const row of [...states].reverse()) appContext.shared.publishStudioDomain(row.domain, row.targetId, row.state);
+					history.past = past; history.future = future;
+				}
+				appContext.shared.studioActionGroupRef.current = null;
+			},
+		};
+		session.touch(domain, targetId); appContext.shared.studioActionGroupRef.current = session;
+		return session;
+	}
+	function publishNativeStudioDomain(domain, targetId, state) {
+		if (domain === "shot") { appContext.patchLive({ shots: state.shots }); appContext.shared.setShots(state.shots); appContext.shared.publishStudioCamera(state.camera, state.manual); }
+		else if (domain === "stage") appContext.shared.publishStudioStage(state.stage);
+		else if (domain === "cast") { appContext.shared.publishStudioCharacters(state.characters); appContext.shared.syncStudioLayerBuffer(state.characters); }
+		else appContext.shared.publishStudioMotion(targetId, state);
+	}
+	function isNativeStudioHistoryRetained(receipt) {
+		const id = receipt?.undo?.historyEntryId, entry = appContext.shared.studioHistoryRef.current.get(id);
+		if (!entry) return false;
+		const retained = (!entry.before || appContext.shared.storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
+			|| [...appContext.castHistory.past, ...appContext.castHistory.future].some(row => row.studio?.historyEntryId === id));
+		if (!retained) appContext.shared.studioHistoryRef.current.delete(id);
+		return retained;
+	}
+	function stepNativeStudioHistory(redo) {
+		const history = appContext.castHistory, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
+		const top = from.at(-1);
+		// Object undo/redo advances the global clock, even when it returns to the
+		// exact object state captured by this Studio entry. Use that boundary
+		// instead of hiding older Studio history behind the traversal tick.
+		if (!top?.studio || top.studio.objects !== appContext.shared.storeRef.current.objects) return false;
+		const entry = top.studio;
+		const state = entry.domain === "compound" ? entry.state.map(row => ({ ...row, state: appContext.shared.snapshotStudioDomain(row.domain, row.targetId) })) : appContext.shared.snapshotStudioDomain(entry.domain, entry.targetId);
+		if (entry.objectsChanged) { if (redo) appContext.shared.storeRef.current.redo(); else appContext.shared.storeRef.current.undo(); }
+		to.push({ ...top, studio: { ...entry, objects: appContext.shared.storeRef.current.objects, state } }); from.pop();
+		if (entry.domain === "compound") { for (const row of [...entry.state].reverse()) appContext.shared.publishStudioDomain(row.domain, row.targetId, row.state); }
+		else if (entry.domain === "shot") {
+			appContext.patchLive({ shots: entry.state.shots }); appContext.shared.setShots(entry.state.shots); appContext.shared.publishStudioCamera(entry.state.camera, entry.state.manual);
+		} else if (entry.domain === "stage") appContext.shared.publishStudioStage(entry.state.stage);
+		else if (entry.domain === "cast") { appContext.shared.publishStudioCharacters(entry.state.characters); appContext.shared.syncStudioLayerBuffer(entry.state.characters); }
+		else appContext.shared.publishStudioMotion(entry.targetId, entry.state);
+		appContext.shared.sceneRevisionRef.current++; appContext.nextTick();
+		appContext.notify(redo ? ko("Redone", "다시 실행됨") : ko("Undone", "실행 취소됨")); return true;
+	}
+	function commitNativeStudioDraft(payload) {
+		const historyEntryId = crypto.randomUUID();
+		if (payload.domain === "objects") {
+			const before = appContext.shared.storeRef.current.objects;
+			appContext.shared.storeRef.current.applyAtomic(() => payload.draft);
+			appContext.patchLive({ objects: appContext.shared.storeRef.current.objects });
+			appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: appContext.shared.storeRef.current.depths().past });
+		} else {
+			appContext.shared.recordStudioHistory(payload.domain, null, historyEntryId);
+			if (payload.domain === "stage") appContext.shared.publishStudioStage(payload.draft);
+			else if (payload.domain === "cast") { appContext.shared.publishStudioCharacters(payload.draft, true); appContext.shared.syncStudioLayerBuffer(payload.draft); }
+			else { appContext.patchLive({ shots: payload.draft.shotDocument.shots }); appContext.shared.editShots(payload.draft.shotDocument.shots); appContext.shared.publishStudioCamera(payload.draft.camera, payload.draft.manual); }
+		}
+		return { historyEntryId };
+	}
+	function canUndoNativeStudioReceipt(receipt) {
+		const entry = receipt?.undo && appContext.shared.studioHistoryRef.current.get(receipt.undo.historyEntryId);
+		if (!entry || receipt.revision.after !== appContext.shared.sceneRevisionRef.current) return false;
+		return entry.domain === "objects" ? entry.tick === appContext.objectClock && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === appContext.shared.storeRef.current.depths().past :
+			entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > appContext.objectClock;
+	}
 	return {
+		beginNativeStudioAction, publishNativeStudioDomain, isNativeStudioHistoryRetained, stepNativeStudioHistory, commitNativeStudioDraft, canUndoNativeStudioReceipt,
 		characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing,
 		studioPick, setStudioPick, rigs, rigMountEpoch, setRigMountEpoch, setPoseTick, charA, charB, showB,
 		poseA, poseB, subject, subject2, updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig,

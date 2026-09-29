@@ -1,7 +1,7 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 223,
+    "writerReferences": 222,
     "handlerSites": 11,
     "handlerTotal": 791,
     "registeredCommands": 37
@@ -35,7 +35,6 @@
     "App.jsx::clearLinePins": 1,
     "App.jsx::onLineStagePointerDown": 1,
     "App.jsx::toggleLineEditMode": 3,
-    "App.jsx::stepStudioHistory": 1,
     "App.jsx::operateStudio": 1,
     "domains/cast.js::useCast": 8,
     "domains/cast.js::setShowB": 1,

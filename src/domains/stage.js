@@ -52,10 +52,13 @@ export function createStageDomain(appContext) {
     'setStyle': 'style', 'setHasEnvSheet': 'hasEnvSheet', 'setShotAspectKey': 'shotAspect', 'setCameraPresetId': 'cameraPresetId', 'setSensorFormat': 'sensorId' })
     .map(([name, key]) => [name, value => write(before => ({ ...before, [key]: typeof value === 'function' ? value(before[key]) : value }))]));
   const document = () => ({ stage: { ...appContext.shared.actorStageRef.current, ...read() } });
-  return { documentStore, document, read, write, beginAction, recordAction, canUndo, stepHistory, ...setters,
+  const domain = { documentStore, document, read, write, beginAction, recordAction, canUndo, stepHistory, ...setters,
+    publish: state => write(state.stage), commitDraft: write,
     load(stage) { anchors.clear(); documentStore.load(normalizeStage(stage)); },
-    dispose() { release(); documentStore.dispose(); },
+    dispose() { unregister(); release(); documentStore.dispose(); },
   };
+  const unregister = appContext.registerStoreDomain('stage', domain);
+  return domain;
 }
 
 export function useStageTransaction() {
