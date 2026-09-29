@@ -1,7 +1,7 @@
 // Ports keep React/live refs and native history authoritative. `write` must
 // publish the live ref synchronously as well as scheduling the React setter.
-// Cast/stage use recordCharacterUndo; shots use recordShotUndo. A native owner
-// may instead supply beginAction (the B1 session contract) and isRetained.
+// Native cast edits use recordCharacterUndo. A native owner may instead
+// supply beginAction (the B1 session contract) and isRetained.
 import { StudioProtocolError } from '../studio-agent-protocol.js';
 import { withCommandHistory } from '../command-bus.js';
 

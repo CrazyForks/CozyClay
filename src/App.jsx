@@ -6452,20 +6452,20 @@ export default function App() {
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
 	function beginStudioAction(domain, targetId = null) {
-		const owned = appContext.storeDomain(domain);
-		return owned ? owned.beginAction(targetId) : castDomain.beginNativeStudioAction(domain, targetId);
+		return appContext.beginAction(domain, targetId, {
+			beginAction: castDomain.beginNativeStudioAction,
+			isRetained: historyEntryId => castDomain.isNativeStudioHistoryRetained({ undo: { historyEntryId } }),
+			stepHistory: (redo, historyEntryId) => studioHistoryRef.current.get(historyEntryId)?.depth !== undefined
+				? objectsDomain.stepObjectHistory(redo) !== null : castDomain.stepNativeStudioHistory(redo),
+		});
 	}
 	function recordStudioAction(domain, run, targetId = null, nested = false) {
-		if (nested && studioActionGroupRef.current) {
-			const session = studioActionGroupRef.current; session.touch(domain, targetId);
-			const result = session.run(run), done = result => ({ result, historyEntryId: null });
-			return result?.then ? result.then(done) : done(result);
-		}
-		const session = beginStudioAction(domain, targetId);
-		const done = result => ({ result, ...session.commit() });
-		const failed = error => { session.cancel(); throw error; };
-		try { const result = session.run(run); return result?.then ? result.then(done, failed) : done(result); }
-		catch (error) { return failed(error); }
+		return appContext.recordAction(domain, run, targetId, nested, {
+			beginAction: castDomain.beginNativeStudioAction,
+			isRetained: historyEntryId => castDomain.isNativeStudioHistoryRetained({ undo: { historyEntryId } }),
+			stepHistory: (redo, historyEntryId) => studioHistoryRef.current.get(historyEntryId)?.depth !== undefined
+				? objectsDomain.stepObjectHistory(redo) !== null : castDomain.stepNativeStudioHistory(redo),
+		});
 	}
 	function publishStudioDomain(domain, targetId, state) {
 		const owned = appContext.storeDomain(domain);
@@ -7624,7 +7624,6 @@ export default function App() {
 								onSelect={setCraneSelectedIndex}
 								onChangePoints={shotsDomain.changeCranePoints}
 								onChangeRail={shotsDomain.changeCraneRail}
-								onDragStart={shotsDomain.recordShotUndo}
 							/>
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
 							<CameraGlide glide={camGlide} camRef={editorCamRef} lookRef={editorLook} onDone={() => setCamGlide(null)} />

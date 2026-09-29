@@ -2,8 +2,10 @@ import Foldout from "./Foldout.jsx";
 import { ko, isKo } from "../locale.js";
 import { Field } from "../ui.jsx";
 import { VIDEO_MODEL_PRESETS } from "../model-presets.js";
+import { useBus } from "../app-context.js";
 
-export default function CameraPanel({ isCameraSelection, shot, moveSequence, cameraKeys, activeShot, changeShotTargetModel }) {
+export default function CameraPanel({ isCameraSelection, shot, moveSequence, cameraKeys, activeShot }) {
+	const { run } = useBus();
 	return (
 <Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
 						<div className="readout">
@@ -45,7 +47,7 @@ export default function CameraPanel({ isCameraSelection, shot, moveSequence, cam
 								aria-label={ko("Target video model", "타깃 영상 모델")}
 								disabled={!activeShot}
 								value={activeShot?.targetModel ?? ""}
-								onChange={(event) => changeShotTargetModel(event.target.value)}
+								onChange={(event) => run('shot.set', { id: activeShot.id, set: { targetModel: event.target.value || null } })}
 							>
 								<option value="">{ko("None", "없음")}</option>
 								{VIDEO_MODEL_PRESETS.map((entry) => (

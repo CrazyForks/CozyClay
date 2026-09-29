@@ -10,7 +10,8 @@ import { startExportAttempt, exportFailureCode } from "../src/analytics.js";
 import { keyframePackEntries, keyframePackName } from "../src/keyframe-pack.js";
 import { buildZip } from "../src/zip-store.js";
 import { depthRangeFromFrames } from "../src/render-passes.js";
-import { createAppContext } from "../src/app-context.js";
+import { shotsFixture } from "./bus/shots-fixture.mjs";
+const shotFixtures = [];
 import { readStudioFunction } from "./bus/verify-domain-modules.mjs";
 
 const source = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
@@ -142,8 +143,17 @@ function fixture() {
 			return { blob: new Blob([new Uint8Array([1, 2])]), mimeType: "video/mp4", frameCount: options.endFrame - options.startFrame + 1 };
 		},
 	};
-	deps.shotsDomain = { recordShotUndo: deps.recordShotUndo };
-	const api = load(deps, createAppContext);
+	const studio = shotsFixture();
+	shotFixtures.push(studio);
+	studio.scope.captureCurrentFraming = deps.captureCurrentFraming;
+	studio.shots.load({ shots: deps.shots, frameCount: deps.tlFrameCount, camera: studio.actual.readStudioState().camera });
+	studio.shots.documentStore.subscribe(() => { deps.shots = studio.shots.read(); });
+	Object.defineProperties(deps, {
+		undoCount: { get: () => studio.shots.documentStore.depths().past },
+		shotWrites: { get: () => studio.shots.documentStore.getSnapshot().domainRevisions.shot },
+	});
+	deps.shotsDomain = studio.shots;
+	const api = load(deps, () => studio.scope.appContext);
 	const signal = (name, predicate = () => true) => {
 		const ready = deferred();
 		const listener = (value) => { if (predicate(value)) { events.off(name, listener); ready.resolve(value); } };
@@ -230,6 +240,7 @@ console.log("PASS retry preserves shot/camera/range/output and cast transforms w
 
 const staticShot = fixture();
 staticShot.deps.shots[0].cameraKeys = [];
+staticShot.deps.shotsDomain.load({ shots: staticShot.deps.shots, frameCount: 360 });
 staticShot.deps.encodeError = Object.assign(new Error("encode"), { exportFailureCode: "encode_failed" });
 await staticShot.api.exportShotVideo();
 assert.equal(staticShot.deps.shotWrites, 1);
@@ -315,4 +326,5 @@ assert.equal(external.lifecycle.length, 0, "external caller remains the only lif
 assert.equal(external.downloads.length, 0);
 assert.equal(external.api.job, null);
 console.log("PASS embed/Workflow pack builder keeps external ownership and returns without downloading");
+for (const fixture of shotFixtures) fixture.dispose();
 console.log("all export recovery seam checks PASS");

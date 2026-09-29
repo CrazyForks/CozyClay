@@ -19,6 +19,7 @@ const app = readStudioSource()
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const camMove = readFileSync(new URL("../src/camera-move.js", import.meta.url), "utf8");
+const commands = readFileSync(new URL('../src/commands/shot.js', import.meta.url), 'utf8');
 
 expect("timeline has one combined Shot/Camera track", timeline.includes('const SHOTS_LANE = "Shots";') && !timeline.includes('const CAMERA_LANE = "Camera";') && !timeline.includes('"Camera",'));
 expect("ruler labels step in 10-frame units", timeline.includes("const LABEL_STEPS = [10, 20, 50, 100, 200, 500, 1000];"));
@@ -30,12 +31,12 @@ expect("camera keys render as dots, not a chip", timeline.includes('className="t
 expect("block key strip keys framing while a dedicated crane graph authors Rail points", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shot.id)") && timeline.includes("onCranePointAdd?.(t, shot.id)") && timeline.includes('className="tl-crane-editor"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
 expect("key strip is a crosshair affordance", css.includes(".tl-shot-key-surface") && css.includes("cursor: crosshair"));
 expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(key.frame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
-expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(shot.id, key.id)") && app.includes("removeCameraKey(shot.cameraKeys, keyId)"));
+expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(shot.id, key.id)") && commands.includes("removeCameraKey(shot.cameraKeys, keyId)"));
 expect("dot drag re-times the key", timeline.includes("handlers.current.onCameraKeyframeMove?.(active.shotId, active.keyId, from, next)") && app.includes("onCameraKeyframeMove={moveCameraKeyframe}"));
-expect("keys stay frame-unique on re-time", app.includes("moveCameraKey(entry.cameraKeys, keyId, target)"));
-expect("re-keying a frame overwrites its framing", app.includes("shot.cameraKeys.filter((key) => key.frame !== target)") && app.includes('createStableItemId("camera-key")'));
+expect("keys stay frame-unique on re-time", commands.includes("moveCameraKey(shot.cameraKeys, keyId,"));
+expect("re-keying a frame overwrites its framing", commands.includes("shot.cameraKeys.filter(key => key.frame !== target)") && commands.includes("createStableItemId('camera-key')"));
 
-expect("the move model is per-shot N keys, not A/B", app.includes("const [shots, setShots, editShots] = useSemanticState") && app.includes("const cameraKeys = activeShot?.cameraKeys ?? []") && !app.includes("setMoveA") && !app.includes("setMoveB"));
+expect("the move model is per-shot N keys, not A/B", app.includes("useDocumentDomain(domain.documentStore, 'shot')") && app.includes("const cameraKeys = activeShot?.cameraKeys ?? []") && !app.includes("setMoveA") && !app.includes("setMoveB"));
 expect("interpolation samples keys segment by segment", camMove.includes("export function cameraMoveAt") && camMove.includes("interpolateFraming(a.framing, b.framing, anchor"));
 expect("MoveRig plays and follows keys through the pure frame sampler", app.includes("keys={cameraKeys}") && app.includes("sampleAt(scene, sampledShot, frame).camera"));
 expect("sequence slate and phrase derive per segment", app.includes("moveSequenceSlate(segs)") && app.includes("moveSequencePhrase(segs)"));
@@ -195,7 +196,7 @@ expect(
 );
 expect(
 	"manual viewport framing stays put until preview or playback",
-	app.includes("manualCameraOverrideRef.current = true") &&
+	app.includes("function cameraPatch(camera, manual = true)") && app.includes("shared.manualCameraOverrideRef.current = manual") &&
 	// flying only interrupts playback while look-through hands the fly
 	// controls the shot camera itself; editor-camera flights never touch it
 	(app.match(/\(lookThroughShot && flyingRef\.current\) \|\| manualCameraOverrideRef\.current/g) ?? []).length === 2 &&
@@ -255,7 +256,7 @@ expect(
 	"Draw Rail exposes an explicit delete action",
 	timeline.includes('ko("Delete rail", "레일 삭제")') &&
 	timeline.includes("onRailDelete") &&
-	app.includes("removeCameraRail(activeCamera)"),
+	commands.includes("removeCameraRail(shot.camera)"),
 );
 expect(
 	"preview starts at the selected shot and stops at its end",

@@ -32,7 +32,7 @@ function stateNames(ast) {
 const domains = {
   motion: { states: ['motion', 'takeRecipe', 'takeVersions'], panels: ['VideoCapturePanel', 'RigControlPanel'] },
   cast: { states: ['characters', 'customPoses', 'waypoints', 'promptClips'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
-  shots: { states: ['shots', 'tlFrameCount', 'cameraMove', 'fovDeg'], panels: ['CameraPanel'] },
+  shots: { states: ['domain', 'tlFrame'], panels: ['CameraPanel'] },
   objects: { states: ['domain'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
   scenes: { states: ['domain'], panels: ['ProjectPanel'] },
   stage: { states: ['domain', 'preset'], panels: ['LightPanel', 'EnvironmentPanel'] },
@@ -191,10 +191,10 @@ function verify() {
   first.notify('visible', 'receipt');
   assert.deepEqual(notices, [['visible', 'receipt']], 'notification arguments are forwarded without reinterpretation');
   first.recordCharacterUndo({ characters: [] });
-  second.recordShotUndo({ shots: [] });
+  assert.equal(second.recordShotUndo, undefined, 'shots use their registered document owner');
   assert.equal(first.castHistory, second.castHistory);
-  assert.deepEqual(facade.castHistory.past.map(entry => entry.tick), [1, 2]);
-  assert.equal(facade.undoClock, 2, 'render projections never fork the undo clock');
+  assert.deepEqual(facade.castHistory.past.map(entry => entry.tick), [1]);
+  assert.equal(facade.undoClock, 1, 'render projections never fork the undo clock');
   console.log('PASS domain facade: render closure lifetime and shared interleaved undo clock');
 }
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) verify();

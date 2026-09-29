@@ -19,8 +19,8 @@ test('acceptance 1: exposes the App-owned clock, cast history, live projections 
   assert.equal(context.undoClock, 1);
   assert.equal(context.castHistory, history.current);
   context.recordCharacterUndo({ characters: characters.current });
-  context.recordShotUndo({ shots: state.current.shots });
-  assert.deepEqual(history.current.past.map(entry => entry.tick), [2, 3]);
+  assert.equal(context.recordShotUndo, undefined, 'shots own their document history');
+  assert.deepEqual(history.current.past.map(entry => entry.tick), [2]);
   assert.equal(context.live.characters, characters.current);
   assert.equal(context.live.scenes, scenes.current);
   assert.equal(context.live.motion, motion.current);
