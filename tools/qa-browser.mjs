@@ -25,6 +25,10 @@ const chromeCandidates = [
 ].filter(Boolean);
 const chromePath = chromeCandidates.find(existsSync);
 if (!chromePath) throw new Error("Google Chrome/Chromium not found; set CHROME_PATH");
+const chromeFlags = String(process.env.QA_CHROME_FLAGS || process.env.CHROME_FLAGS || "")
+	.trim()
+	.split(/\s+/)
+	.filter(Boolean);
 
 const port = Number(process.env.CDP_PORT || 9222);
 // The studio lives at /app/; "/" is the static landing page, and a QA run
@@ -108,6 +112,7 @@ try {
 		`--remote-debugging-port=${port}`,
 		`--user-data-dir=${profileDir}`,
 		`--window-size=${process.env.QA_WINDOW || "1600,1000"}`,
+		...chromeFlags,
 		pageUrl,
 	]);
 	children.push(chrome);
