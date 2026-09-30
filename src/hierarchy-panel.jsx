@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ko, isKo } from "./locale.js";
 import { buildHierarchyNodes } from "./hierarchy-model.js";
 import { sceneObjectIdFromHierarchy } from "./scene-objects.js";
-import AddObjectMenu, { CatalogueEntries, displayObjectLabel } from "./object-catalog.jsx";
+import { CatalogueEntries, displayObjectLabel } from "./object-catalog.jsx";
 import { Dropdown } from "./ui.jsx";
+import "./hierarchy-panel.css";
 
 const HIERARCHY_LABELS_KO = {
 	"SCENE 01": "장면 01",
@@ -35,6 +36,8 @@ const HIERARCHY_LABELS_KO = {
 	Environment: "환경",
 	Props: "소품",
 	Light: "조명",
+	"Scene structure": "장면 구조",
+	"Scene hierarchy": "장면 계층",
 };
 
 const FALLBACK_SCENES = [{ id: "current-scene", name: "SCENE 01" }];
@@ -196,6 +199,57 @@ function displayHierarchyLabel(node) {
 	if (node.kind === "object") return displayObjectLabel(node.label);
 	if (node.kind === "scene") return displaySceneName(node.label);
 	return isKo ? (HIERARCHY_LABELS_KO[node.label] ?? node.label) : node.label;
+}
+
+const OUTLINER_TYPES = {
+	folder: "Folder",
+	mesh: "Mesh",
+	cast: "Cast",
+	cam: "Cam",
+	light: "Light",
+};
+
+function outlinerTypeFor(node) {
+	const key = node.kind === "object"
+		? "mesh"
+		: node.kind === "character" || node.kind === "bone"
+			? "cast"
+			: node.kind === "camera"
+				? "cam"
+				: node.kind === "light"
+					? "light"
+					: "folder";
+	const label = key === "folder"
+		? ko(OUTLINER_TYPES[key], "폴더")
+		: key === "mesh"
+			? ko(OUTLINER_TYPES[key], "메시")
+			: key === "cast"
+				? ko(OUTLINER_TYPES[key], "캐스트")
+				: key === "cam"
+					? ko(OUTLINER_TYPES[key], "카메라")
+					: ko(OUTLINER_TYPES[key], "조명");
+	return { key, label };
+}
+
+function OutlinerChip({ type }) {
+	return <span className={`v2-outliner-chip ${type}`} aria-hidden="true" />;
+}
+
+function countHierarchyNodes(nodes) {
+	return nodes.reduce((count, node) => count + 1 + countHierarchyNodes(node.children ?? []), 0);
+}
+
+function filterHierarchyNodes(nodes, query, showB) {
+	const normalized = query.trim().toLocaleLowerCase();
+	const filterNode = (node) => {
+		if (node.optional === "showB" && !showB) return null;
+		if (!normalized) return node;
+		const label = displayHierarchyLabel(node).toLocaleLowerCase();
+		const children = (node.children ?? []).map(filterNode).filter(Boolean);
+		if (!label.includes(normalized) && children.length === 0) return null;
+		return children.length ? { ...node, children } : { ...node, children: undefined };
+	};
+	return nodes.map(filterNode).filter(Boolean);
 }
 
 function indexParents(nodes, parent = null, parents = new Map()) {
@@ -435,6 +489,7 @@ function TreeRow({
 	// only exists when the caller asked for reparenting.
 	const dropEvents = rowDrag || drop || null;
 	const label = displayHierarchyLabel(node);
+	const outlinerType = outlinerTypeFor(node);
 	const rowWrapRef = useRef(null);
 	const inputRef = useRef(null);
 	// A commit/cancel may race the blur that follows the input unmounting;
@@ -495,7 +550,7 @@ function TreeRow({
 				// blur commits (docs/unity-reference.md §9.7). A div, not the
 				// row button — an input inside a button is invalid HTML.
 				<div className={"hierarchy-row" + (touched ? " agent-touched" : "")}>
-					<HierarchyIcon kind={node.kind} />
+					<OutlinerChip type={outlinerType.key} />
 					<input
 						ref={inputRef}
 						className="hierarchy-rename-input"
@@ -524,10 +579,11 @@ function TreeRow({
 					onClick={() => onSelect(node.id)}
 					onDoubleClick={onRenameStart ?? undefined}
 				>
-					<HierarchyIcon kind={node.kind} />
+					<OutlinerChip type={outlinerType.key} />
 					{showLabel && <span className="hierarchy-label">{label}</span>}
 					{status && <span className="hierarchy-status">{status}</span>}
 					{badge !== null && badge !== undefined && badge !== 0 && <span className="hierarchy-badge">{badge}</span>}
+					<span className="v2-outliner-type">{outlinerType.label}</span>
 				</button>
 			)}
 			{(node.kind === "object" || node.kind === "character") && onToggleHidden && (
@@ -586,6 +642,7 @@ export default function HierarchyPanel({
 	onSceneDelete,
 }) {
 	const [expanded, setExpanded] = useState(() => new Set(["shot", "characterA"]));
+	const [search, setSearch] = useState("");
 	const [contextMenu, setContextMenu] = useState(null);
 	// Row currently in in-place rename. The panel owns it: F2/Return and the
 	// row context menu are the only ways in, so app state stays out of it.
@@ -621,6 +678,14 @@ export default function HierarchyPanel({
 		}));
 	}, [activeSceneName, sceneObjects, characters]);
 	const parents = useMemo(() => indexParents(hierarchyNodes), [hierarchyNodes]);
+	const filteredHierarchyNodes = useMemo(
+		() => filterHierarchyNodes(hierarchyNodes, search, showB),
+		[hierarchyNodes, search, showB],
+	);
+	const outlinerCount = useMemo(
+		() => countHierarchyNodes(filteredHierarchyNodes),
+		[filteredHierarchyNodes],
+	);
 
 	useEffect(() => {
 		setExpanded((current) => {
@@ -795,9 +860,9 @@ export default function HierarchyPanel({
 		nodes.flatMap((node) => {
 			if (node.optional === "showB" && !showB) return [];
 			const sceneRoot = node.id === SCENE_ROOT_ID;
-			// The root carries no fold caret, so nothing can close it: the scene is
-			// always open under its own name.
-			const open = sceneRoot || expanded.has(node.id);
+			// Search opens only the filtered branches. The stored expansion set is
+			// left untouched so clearing the query restores the author's tree.
+			const open = sceneRoot || expanded.has(node.id) || Boolean(search.trim());
 			const editing = editingId === node.id;
 			return [
 				<TreeRow
@@ -846,22 +911,26 @@ export default function HierarchyPanel({
 		});
 
 	return (
-		<section className="hierarchy-pane" aria-label={ko("Scene hierarchy", "장면 계층")}>
+		<section className="hierarchy-pane v2-outliner" aria-label={ko("Outliner", "아웃라이너")}>
 			<div className="hierarchy-heading">
-				<div>
-					<span className="hierarchy-kicker">{ko("Hierarchy", "계층")}</span>
-					<strong>{ko("Scene structure", "장면 구조")}</strong>
-				</div>
-				<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
+				<strong>{ko("Outliner", "아웃라이너")}</strong>
+				<span className="v2-outliner-count" data-testid="outliner-count">{outlinerCount}</span>
 			</div>
-			{onAddObject && (
-				<div className="hierarchy-toolbar">
-					<AddObjectMenu onAdd={onAddObject} />
-					<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
-				</div>
-			)}
+			<label className="v2-outliner-search-wrap">
+				<span className="v2-outliner-search-icon" aria-hidden="true">⌕</span>
+				<input
+					className="v2-outliner-search"
+					type="search"
+					value={search}
+					placeholder={ko("Search", "검색")}
+					aria-label={ko("Search Outliner", "아웃라이너 검색")}
+					onChange={(event) => setSearch(event.target.value)}
+				/>
+			</label>
 			<div className="hierarchy-tree" role="tree" ref={treeRef} onKeyDown={onTreeKeyDown} onContextMenu={openCreateMenu}>
-				{renderNodes(hierarchyNodes)}
+				{filteredHierarchyNodes.length > 0 ? renderNodes(filteredHierarchyNodes) : (
+					<div className="v2-outliner-empty" role="status">{ko("No matches", "일치하는 항목 없음")}</div>
+				)}
 			</div>
 			{sceneHint && (
 				<p className="hierarchy-scene-hint" role="status">{sceneHint}</p>

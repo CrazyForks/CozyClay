@@ -146,9 +146,14 @@ try {
 
 	/* --------------------------------------------------- a cube to paint ---- */
 
-	await evaluate("document.querySelector('.add-object-trigger').click()");
-	expect("the add-object catalogue opens", await waitFor("document.querySelectorAll('.add-object-item').length > 0"));
-	await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
+	await evaluate(`(() => {
+		const row = document.querySelector('.v2-outliner [data-node-id="light"]');
+		const box = row.getBoundingClientRect();
+		row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(box.left + 28), clientY: Math.round(box.top + 12), button: 2 }));
+		return true;
+	})()`);
+	expect("right-click Create opens from the Outliner", await waitFor("document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item').length > 0"));
+	await evaluate("[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
 	expect("the cube opens in the inspector", await waitFor("!!document.querySelector('.object-colors-pop')"));
 
 	/* ------------------------------------------------------ the palette ---- */

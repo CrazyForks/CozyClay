@@ -43,7 +43,7 @@ const expect = (name, condition, detail = "") => {
 	if (!condition) failures += 1;
 };
 
-expect("app becomes ready", await waitFor("!!document.querySelector('.add-object-trigger')", 30000));
+expect("app becomes ready", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 30000));
 
 // --- guide cycle over the real DOM ----------------------------------------
 const cycle = "document.querySelector('.vp-guide-cycle')";

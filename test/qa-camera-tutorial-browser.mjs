@@ -88,6 +88,15 @@ const click = async (selector, modifiers = 0) => {
 	await mouse("mouseReleased", { x: box.x, y: box.y, button: "left", buttons: 0, clickCount: 1, modifiers });
 	return true;
 };
+const createFromOutliner = async (label) => {
+	const box = await centreOf('[data-node-id="light"]');
+	if (!box) return false;
+	await mouse("mousePressed", { x: box.x, y: box.y, button: "right", buttons: 2, clickCount: 1 });
+	await mouse("mouseReleased", { x: box.x, y: box.y, button: "right", buttons: 0, clickCount: 1 });
+	if (!await waitFor("!!document.querySelector('.v2-outliner .hierarchy-context-menu .add-object-item')")) return false;
+	await evaluate(`[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find((node) => node.textContent.trim().startsWith(${JSON.stringify(label)}))?.click()`);
+	return true;
+};
 const key = async (code, keyName, virtualKeyCode) => {
 	const common = { code, key: keyName, windowsVirtualKeyCode: virtualKeyCode, nativeVirtualKeyCode: virtualKeyCode };
 	await send("Input.dispatchKeyEvent", { type: "keyDown", text: keyName, ...common });
@@ -386,11 +395,10 @@ expect("plain /app/ carries no tutorial", await evaluate('!document.querySelecto
 expect("it comes up on its own project, not the starter", await waitFor(`${projectLabel} === "QA Scene"`), await evaluate(projectLabel));
 expect("and with no take loaded", await evaluate("!window.__cozyclay?.motion"));
 
-// Modify the scene by hand: the hierarchy's "+ Add object" menu, one prop.
+// Modify the scene by hand through the Outliner right-click Create accelerator.
 const propsBefore = Math.max(await evaluate(propCount), 0);
-expect("the hierarchy offers + Add object", await waitFor("!!document.querySelector('.add-object-trigger')"));
-expect("the add-object menu opens", await click(".add-object-trigger") && await waitFor("!!document.querySelector('.add-object-item')"));
-expect("an object can be added", await click(".add-object-item"));
+expect("right-click Create opens from the Outliner", await createFromOutliner("Cube"));
+expect("an object can be added", await waitFor("[...document.querySelectorAll('.v2-outliner .hierarchy-label')].some((node) => node.textContent.trim() === 'Cube')"));
 expect(
 	"the object lands in the scene",
 	await waitFor(`${propCount} === ${propsBefore + 1}`),

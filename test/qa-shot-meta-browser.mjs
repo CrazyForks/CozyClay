@@ -57,7 +57,7 @@ const expect = (name, condition, detail = "") => {
 	if (!condition) failures += 1;
 };
 
-expect("app becomes ready", await waitFor("!!document.querySelector('.add-object-trigger')", 60000));
+expect("app becomes ready", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 60000));
 expect("the QA capture-meta hook is exposed", await waitFor("typeof window.__cozyclay?.captureMeta === 'function'", 30000));
 
 // --- a shot to aim -------------------------------------------------------

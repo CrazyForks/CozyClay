@@ -56,7 +56,7 @@ const expandNode = (id) => evaluate(`(() => {
 })()`);
 const selectNode = (id) => evaluate(`${nodeRow(id)}?.querySelector('.hierarchy-row')?.click() ?? false`);
 
-expect("app becomes ready", await waitFor("!!document.querySelector('.add-object-trigger')", 30000));
+expect("app becomes ready", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 30000));
 
 // a second cast member via the Subjects panel
 await evaluate(`[...document.querySelectorAll('button')].find(b => /add second subject|\ub450 \ubc88\uc9f8 \uc778\ubb3c/i.test(b.textContent))?.click()`);
