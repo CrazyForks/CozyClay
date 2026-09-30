@@ -4029,6 +4029,9 @@ export default function App() {
 				return point.toArray();
 			},
 			committedIkEdits, waypoints,
+			// Scene props as the stage sees them, for QA that places a box and
+			// waits for its transform to land before fitting to it.
+			objects: sceneObjects,
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
 			activeCam: ikMode ? poserCamRef.current : lookThroughShot ? shotCamRef.current : editorCamRef.current,

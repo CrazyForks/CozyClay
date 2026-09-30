@@ -886,6 +886,11 @@ export function useMotion(appContext) {
 	const motion = domain.visibleMotion(appContext.shared.activeChar.id);
 	const rangePinRebuildRef = useRef(null);
 	const rangePinSourceStamp = JSON.stringify([pinLayer.take, appContext.shared.activeChar.id]);
+	// A fit is invalidated by a different take, trim or preview, not by key
+	// writes: every layer write re-snapshots the take descriptor, so the decoded
+	// `motion` object is new after the fit's own commit even though the take is
+	// unchanged. Key the reset on the descriptor's content instead.
+	const platformFitPreview = motion === domain.motionFor(appContext.shared.activeChar.id) ? null : motion;
 	useEffect(() => {
 		platformFitJobRef.current += 1;
 		setPlatformFitRunning(false);
@@ -893,7 +898,7 @@ export function useMotion(appContext) {
 		platformFitProgressSet(0);
 		platformFitAppliedRef.current = null;
 		setPlatformFitApplied(false);
-	}, [appContext.shared.activeChar.id, motion, appContext.shared.activeRig]);
+	}, [rangePinSourceStamp, platformFitPreview, appContext.shared.activeRig]);
 	// Object-bound pins follow edited prop transforms and paths, as in the
 	// source branch. Rebuilding derived keys must not create an undo entry.
 	useEffect(() => {

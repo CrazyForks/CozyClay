@@ -106,9 +106,11 @@ const boxCenter = {
 	z: finiteToes.reduce((sum, point) => sum + point.z, 0) / finiteToes.length,
 };
 const sourceHeights = rawSamples.map((row) => ({ frame: row.frame, leftFoot: row.feet.leftFoot.sole, rightFoot: row.feet.rightFoot.sole, pelvis: row.pelvis?.y ?? null }));
-const objectId = await evaluate(`window.__cozyclay.addSceneObject('cube', ${JSON.stringify(boxCenter)})`);
+// main's QA surface places objects through the owned object.add command and
+// returns the created id (src/App.jsx sceneObject.place).
+const objectId = await evaluate(`window.__cozyclay.sceneObject.place({ kind: 'cube', x: ${boxCenter.x}, z: ${boxCenter.z} }).id`);
 if (!objectId) throw new Error("addSceneObject did not return an id");
-await evaluate(`window.__cozyclay.moveSceneObject(${JSON.stringify(objectId)}, {scaleY:0.2})`);
+await evaluate(`window.__cozyclay.sceneObject.update({ id: ${JSON.stringify(objectId)}, scaleY: 0.2 })`);
 await wait(`window.__cozyclay.objects.some(o=>o.id===${JSON.stringify(objectId)} && Math.abs(o.height*o.scaleY-0.2)<1e-9)`);
 console.log("box", JSON.stringify(await evaluate(`window.__cozyclay.objects.find(o=>o.id===${JSON.stringify(objectId)})`)));
 await evaluate(`([...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Rig' || e.textContent.trim()==='리그'))?.click()`);
@@ -195,7 +197,7 @@ check("Remove platform fit returns feet to pre-fit heights below 0.002 m", remov
 check("Remove button disappears after removal", removeGone);
 
 // Replace the box with a 1.5 m version and run the same real button again.
-await evaluate(`window.__cozyclay.moveSceneObject(${JSON.stringify(objectId)}, {scaleY:1.5})`);
+await evaluate(`window.__cozyclay.sceneObject.update({ id: ${JSON.stringify(objectId)}, scaleY: 1.5 })`);
 await wait(`window.__cozyclay.objects.some(o=>o.id===${JSON.stringify(objectId)} && Math.abs(o.height*o.scaleY-1.5)<1e-9)`);
 await screenshot("wall");
 await click('[data-testid="platform-fit-run"]');
