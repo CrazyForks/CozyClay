@@ -598,12 +598,18 @@ export function solveIk(chain, targetWorld, { maxExtension = null, softening = 0
 	const isBent = seg0.dot(seg1) < 0.999;
 	let bend;
 	if (isBent) {
-		// Continuity: reuse the elbow's current offset from the line.
+		// Legacy continuity: reuse the elbow's current offset from the NEW line.
+		// fix-collisions and its fixtures are tuned on this result, but when the
+		// line rotates past a near-straight elbow the offset changes sign and
+		// the joint reverse-bends.
 		bend = p1cur.clone().sub(linePoint);
-		// Only the part perpendicular to dir is a side; the along-dir remainder
-		// puts p1 off the l0 sphere and the effector misses (up to cm). Opt-in:
-		// fix-collisions and its fixtures are tuned on the legacy result.
-		if (exactHinge) bend.addScaledVector(dir, -bend.dot(dir));
+		// exactHinge keeps the chain's CURRENT hinge axis a = norm(seg0 x seg1)
+		// and bends in the plane it spans with dir: bend = dir x a, which is
+		// perpendicular to dir, so p1 stays on the l0 sphere. The solved
+		// thigh' x shin' = off*d*(a - dir(a.dir)), whose dot with a is
+		// off*d*(1 - (a.dir)^2) >= 0, so the bend side cannot flip. When the
+		// target lies along a, bend degenerates and the pole fallback runs.
+		if (exactHinge) bend = dir.clone().cross(seg0.clone().cross(seg1).normalize());
 	}
 	if (!bend || bend.lengthSq() < 1e-8) {
 		// Straight chain — no side to continue; use the pole hint.

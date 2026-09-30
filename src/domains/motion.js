@@ -25,6 +25,7 @@ import {
 	toArdyFrame,
 } from "../app-stage.jsx";
 import { copyPhysicsKeys, physicsKeyStamp, reviewAutoPhysics } from "../ardy/physics-review.js";
+import { fitPlatforms } from "../ardy/platform-fit.js";
 import {
 	createIkState,
 	ikTouch,
@@ -585,6 +586,14 @@ export function useMotion(appContext) {
 
 	const [physicsOptions, setPhysicsOptions] = useState({ overrides: [], protectedFrames: [], strength: 1 });
 
+	const [platformFitRunning, setPlatformFitRunning] = useState(false);
+	const [platformFitLast, setPlatformFitLast] = useState(null);
+	const [platformFitProgress] = useState(createPhysicsProgress);
+	const platformFitProgressSet = platformFitProgress.set;
+	const platformFitJobRef = useRef(0);
+	const platformFitAppliedRef = useRef(null);
+	const [platformFitApplied, setPlatformFitApplied] = useState(false);
+
 	const [ikTick, setIkTick] = useState(0);
 
 	const committedIkEdits = domain.layer(appContext.shared.activeChar.id).committedIkEdits;
@@ -877,6 +886,14 @@ export function useMotion(appContext) {
 	const motion = domain.visibleMotion(appContext.shared.activeChar.id);
 	const rangePinRebuildRef = useRef(null);
 	const rangePinSourceStamp = JSON.stringify([pinLayer.take, appContext.shared.activeChar.id]);
+	useEffect(() => {
+		platformFitJobRef.current += 1;
+		setPlatformFitRunning(false);
+		setPlatformFitLast(null);
+		platformFitProgressSet(0);
+		platformFitAppliedRef.current = null;
+		setPlatformFitApplied(false);
+	}, [appContext.shared.activeChar.id, motion, appContext.shared.activeRig]);
 	// Object-bound pins follow edited prop transforms and paths, as in the
 	// source branch. Rebuilding derived keys must not create an undo entry.
 	useEffect(() => {
@@ -1902,6 +1919,64 @@ export function useMotion(appContext) {
 		} finally {
 			if (appContext.shared.physicsJobRef.current === job) { restore(); setAutoPhysicsRunning(false); setIkTick((n) => n + 1); }
 		}
+	}
+
+	async function platformFitRun(id, context, { removal = false } = {}) {
+		const rig = appContext.shared.rigs[id], resolved = rig && resolveIkRig(rig), take = domain.motionFor(id);
+		if (!resolved || !take) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take and character rig first.');
+		if (platformFitRunning) throw new StudioProtocolError('TARGET_BUSY', 'A platform fit is already running.');
+		const job = ++platformFitJobRef.current;
+		const sourceKeys = copyPhysicsKeys(decodeMotionKeys(domain.layer(id).ikKeys));
+		const sourceTracked = new Set([...sourceKeys.values()].flatMap(entry => [...entry.keys()]));
+		const stamp = physicsKeyStamp(sourceKeys);
+		const prior = platformFitAppliedRef.current;
+		const stacked = prior && prior.id === id && prior.stamp === stamp ? prior : null;
+		const frame = appContext.shared.tlFrame;
+		const restore = () => appContext.shared.poseMemberAtFrame(rig, take, appContext.shared.ikStatesRef.current.get(id), frame, 6);
+		let lastYield = performance.now();
+		const check = () => { context?.check?.(); if (platformFitJobRef.current !== job) throw new StudioProtocolError('STALE_TARGET', 'Platform fit was superseded.'); };
+		setPlatformFitRunning(true); platformFitProgressSet(0); setPlatformFitLast(null);
+		try {
+			const result = await fitPlatforms({
+				rig: rig, motion: take, chains: resolved.chains, fkJoints: resolved.fkJoints, sourceKeys,
+				applyRaw: at => appContext.shared.poseMemberAtFrame(rig, take, null, at),
+				sceneObjects: removal ? [] : (appContext.ports.read?.().objects ?? appContext.shared.sceneObjects),
+				onProgress: platformFitProgressSet,
+				yieldFrame: async () => {
+					check(); if (performance.now() - lastYield < 16) return;
+					restore();
+					await new Promise(resolve => { const channel = new MessageChannel(); channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); }; channel.port2.postMessage(0); });
+					lastYield = performance.now(); check();
+				},
+			});
+			check();
+			const last = { summary: result.summary, steps: result.steps, changedFrames: result.changedFrames };
+			setPlatformFitLast(last);
+			if (removal) {
+				if (result.changedFrames.length) context.commit(() => domain.setKeys(id, result.candidate.keys));
+				platformFitAppliedRef.current = null; setPlatformFitApplied(false); setPlatformFitLast(null);
+				return { ...last, removed: result.changedFrames.length > 0 };
+			}
+			if (!result.changedFrames.length) return last;
+			context.commit(() => domain.setKeys(id, result.candidate.keys));
+			platformFitAppliedRef.current = { id, before: stacked?.before ?? sourceKeys, tracked: stacked?.tracked ?? sourceTracked, stamp: physicsKeyStamp(decodeMotionKeys(domain.layer(id).ikKeys)) };
+			setPlatformFitApplied(true);
+			return last;
+		} finally {
+			if (platformFitJobRef.current === job) { restore(); setPlatformFitRunning(false); }
+		}
+	}
+
+	function platformFitRemove(id, context) {
+		const applied = platformFitAppliedRef.current;
+		if (!applied || applied.id !== id || platformFitRunning) return { removed: false };
+		const current = physicsKeyStamp(decodeMotionKeys(domain.layer(id).ikKeys));
+		if (current === applied.stamp) {
+			context.commit(() => domain.setKeys(id, copyPhysicsKeys(applied.before)));
+			platformFitAppliedRef.current = null; setPlatformFitApplied(false); setPlatformFitLast(null);
+			return { removed: true };
+		}
+		return platformFitRun(id, context, { removal: true });
 	}
 
 	function ikDeleteKeyframe(frame) {
@@ -3035,6 +3110,8 @@ export function useMotion(appContext) {
 	domain.onPhysicsRunning = setAutoPhysicsRunning;
 	domain.onPhysicsProgress = setPhysicsProgress;
 	domain.onPhysicsPreview = result => { setPhysicsPreview(result); setPhysicsShow(true); setIkTick(value => value + 1); };
+	domain.platformFitRun = platformFitRun;
+	domain.platformFitRemove = platformFitRemove;
 	domain.beginPlayback = id => { const rig = appContext.shared.rigs[id]; if (rig) beginPlaybackOn(rig); };
 	domain.loadRemote = async (args, context) => {
 		const entry = domain.layer(args.characterId).takeVersions.find(version => version.motionUrl === args.motionUrl);
@@ -3080,6 +3157,7 @@ export function useMotion(appContext) {
 		changeMotionSegmentSpeed, removeMotionSegmentById, poseOtherCastMembers, toggleIkMode, ikSolve,
 		ikDragEnd, ikAddKeyframe, externalBlockers, runFixCollisions, runFixCollisionsRange,
 		changePhysicsOptions, showPhysicsPreview, cancelPhysicsPreview, applyPhysicsPreview, runAutoPhysics,
+		platformFitRun, platformFitRemove, platformFitRunning, platformFitLast, platformFitProgress, platformFitApplied,
 		ikDeleteKeyframe, ikApplyPoseAsKey, recheckMotionHealth, changeArdySeed, takeSeed,
 		runLineEdit: () => domain.run('motion.commitLineEdit', { characterId: appContext.shared.activeChar.id }),
 		runAllPromptBlocks, runArdy, onTrailDragStart, onTrailDragPreview, onTrailDragEnd,

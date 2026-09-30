@@ -1353,6 +1353,7 @@ export default function App() {
 		changeMotionSegmentSpeed, removeMotionSegmentById, poseOtherCastMembers, toggleIkMode, ikSolve,
 		ikDragEnd, ikAddKeyframe, externalBlockers, runFixCollisions, runFixCollisionsRange,
 		changePhysicsOptions, showPhysicsPreview, cancelPhysicsPreview, applyPhysicsPreview, runAutoPhysics,
+		platformFitRunning, platformFitLast, platformFitProgress, platformFitApplied,
 		ikDeleteKeyframe, ikApplyPoseAsKey, recheckMotionHealth, changeArdySeed, takeSeed, runLineEdit,
 		runAllPromptBlocks, runArdy, onTrailDragStart, onTrailDragPreview, onTrailDragEnd, runTrailRegeneration,
 		genQueue, setGenQueue, executeMotionJob, seedLoadedTake, loadTakeVersion, selectedMotionReadiness,
@@ -4123,6 +4124,7 @@ export default function App() {
 			objectPath: selectedSceneObject?.path ?? null,
 			pathPointIndex,
 			pathHandlesEnabled: !preview && !lookThroughShot && !ikMode && !posing && !!selectedSceneObject?.path,
+			addSceneObject: (kind, placement = {}) => addSceneObject(kind, placement),
 			scrub: (frame) => setTlFrame(Math.max(0, Math.min(tlFrameCount - 1, Math.round(frame)))),
 			pause: () => setTlPlaying(false),
 			// Motion-trail QA surface: read the current trail policy and drive the
@@ -4167,6 +4169,11 @@ export default function App() {
 			},
 			apRun: runAutoPhysics,
 			physics: { preview: physicsPreview, show: physicsShow, running: autoPhysicsRunning, options: physicsOptions },
+			platformFit: {
+				running: platformFitRunning, applied: platformFitApplied, last: platformFitLast,
+				run: () => Promise.resolve(motionDomain.run('motion.platformFit.run', { characterId: activeChar?.id })).then(receipt => receipt.output),
+				remove: () => Promise.resolve(motionDomain.run('motion.platformFit.remove', { characterId: activeChar?.id })).then(receipt => receipt.output),
+			},
 			apOptions: changePhysicsOptions,
 			preview,
 			pathDraw,
@@ -4176,7 +4183,7 @@ export default function App() {
 		// close over them: a stale closure would report the set as it was two
 		// edits ago — and, after an undo that removes a subject, would keep
 		// reporting the ghost's capsules.
-	}, [activeRig, motion, tlFrame, tlFrameCount, ikMode, ikChains, ikFocus, ikTick, charA, rangePins, rangePinResiduals, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, preview, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning]);
+	}, [activeRig, motion, tlFrame, tlFrameCount, ikMode, ikChains, ikFocus, ikTick, charA, rangePins, rangePinResiduals, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, preview, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning, platformFitRunning, platformFitLast, platformFitApplied]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -7951,6 +7958,10 @@ export default function App() {
 						physicsPreview={physicsPreview}
 						physicsShow={physicsShow}
 						physicsOptions={physicsOptions}
+						platformFitRunning={platformFitRunning}
+						platformFitProgress={platformFitProgress}
+						platformFitLast={platformFitLast}
+						platformFitApplied={platformFitApplied}
 						tlFrame={tlFrame}
 						changePhysicsOptions={changePhysicsOptions}
 						runAutoPhysics={runAutoPhysics}

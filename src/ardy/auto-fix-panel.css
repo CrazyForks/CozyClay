@@ -1,0 +1,105 @@
+.auto-fix-group {
+	--auto-fix-space: 4px;
+	display: grid;
+	gap: calc(var(--auto-fix-space) * 3);
+	margin-top: calc(var(--auto-fix-space) * 3);
+}
+
+.auto-fix-card {
+	--auto-fix-space: 4px;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--auto-fix-space) * 2);
+	padding: calc(var(--auto-fix-space) * 3);
+	border: 1px solid var(--line2);
+	border-radius: var(--radius);
+	background: var(--card2);
+	color: var(--fg);
+}
+
+.auto-fix-card h4 {
+	margin: 0;
+	color: var(--fg);
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.auto-fix-card-head {
+	display: grid;
+	gap: var(--auto-fix-space);
+	min-width: 0;
+}
+
+.auto-fix-card .inspector-hint {
+	margin: 0;
+}
+
+.auto-fix-actions {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: calc(var(--auto-fix-space) * 2);
+}
+
+.auto-fix-actions > .btn {
+	min-width: 0;
+	margin-top: 0;
+	white-space: normal;
+	line-height: 1.3;
+}
+
+.body-collision-card .auto-fix-actions {
+	grid-template-columns: 1fr;
+}
+
+.auto-fix-card > .btn.full {
+	margin-top: 0;
+}
+
+.auto-fix-result {
+	min-width: 0;
+	padding: calc(var(--auto-fix-space) * 2);
+	border: 1px solid var(--line2);
+	border-radius: var(--radius);
+	background: var(--card2);
+	color: var(--muted);
+	font-size: 10px;
+	line-height: 1.4;
+}
+
+.auto-fix-card details {
+	border-top: 1px solid var(--line2);
+	padding-top: calc(var(--auto-fix-space) * 2);
+}
+
+.auto-fix-card details > summary {
+	color: var(--muted);
+	font-size: 11px;
+}
+
+.auto-fix-card .physics-actions {
+	margin: 0;
+}
+
+.auto-fix-card.platform-fit,
+.auto-fix-card.physics-review {
+	margin-top: 0;
+	padding-top: calc(var(--auto-fix-space) * 3);
+	border-top: 1px solid var(--line2);
+}
+
+/* Four tools: the shared .segmented pill (styles.css, loaded after this file)
+   is sized for two, so these rules need the extra class to win. Same inset
+   geometry as the base pill, one quarter wide. */
+.segmented.ik-edit-tools:before {
+	width: calc((100% - 8px) / 4);
+}
+
+.segmented.ik-edit-tools[data-active="ik"]:before { transform: translateX(0); }
+.segmented.ik-edit-tools[data-active="trail"]:before { transform: translateX(100%); }
+.segmented.ik-edit-tools[data-active="pin"]:before { transform: translateX(200%); }
+.segmented.ik-edit-tools[data-active="autofix"]:before { transform: translateX(300%); }
+
+.ik-tool-panel {
+	min-width: 0;
+}
