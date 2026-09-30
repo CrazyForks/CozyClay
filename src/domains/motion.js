@@ -253,9 +253,58 @@ export function createMotionDomain(appContext, characters) {
 		};
 	}
 	function setKeys(id, keys) { return writeLayer(id, { ikKeys: encodeMotionKeys(keys) }); }
-	function setRangePinState(id, state, { recordUndo = true } = {}) {
-		const commit = () => writeLayer(id, { ikKeys: encodeMotionKeys(state.keys), ikPins: encodeRangePins(state.pins), ikPinResiduals: encodeRangePinResiduals(state.pinResiduals) });
-		return recordUndo ? appContext.recordAction('motion', commit, id, true) : commit();
+	function setRangePinState(id, state) {
+		return writeLayer(id, { ikKeys: encodeMotionKeys(state.keys), ikPins: encodeRangePins(state.pins), ikPinResiduals: encodeRangePinResiduals(state.pinResiduals) });
+	}
+	function rangePinState(id) {
+		const row = layer(id), keys = decodeMotionKeys(row.ikKeys);
+		return { ...createIkState(), keys, tracked: new Set([...keys.values()].flatMap(entry => [...entry.keys()])), pins: decodeRangePins(row.ikPins), pinResiduals: decodeRangePinResiduals(row.ikPinResiduals) };
+	}
+	function removePin(id, pinId) {
+		const state = rangePinState(id);
+		removeRangePinKeys(state, pinId); state.pins.delete(pinId); state.pinResiduals.delete(pinId);
+		setRangePinState(id, state);
+	}
+	function bakeRangePin(id, spec, replaceExisting = false, projectionOnly = false) {
+		const motion = motionFor(id), rig = rigFor(id), resolved = rig && resolveIkRig(rig);
+		if (!motion || !resolved) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take and rig for this character first.');
+		const pin = normalizeRangePin(spec, { clipFrames: motion.frames }), state = rangePinState(id);
+		const tracks = rangePinTracks(pin);
+		const overlap = [...state.pins.values()].find(other => other.id !== pin.id && rangePinTracks(other).some(track => tracks.includes(track)) && Math.max(pin.startFrame, other.startFrame) <= Math.min(pin.endFrame, other.endFrame));
+		if (overlap) throw new StudioProtocolError('INVALID_ARGUMENT', 'A required track already has an overlapping pin.');
+		for (let at = pin.startFrame; at <= pin.endFrame; at++) {
+			const entry = state.keys.get(at); if (!entry) continue;
+			for (const track of tracks) if (entry.has(track) && entry.get(track).pin !== pin.id) {
+				if (!replaceExisting) throw new StudioProtocolError('INVALID_ARGUMENT', 'Confirm Replace existing keys before applying this pin.');
+				entry.delete(track);
+			}
+			if (!entry.size) state.keys.delete(at);
+		}
+		const objectWorldMatrix = (objectId, at) => {
+			const object = appContext.shared.sceneObjects.find(entry => entry.id === objectId);
+			if (!object) return null;
+			const local = rangePinObjectMatrixAt(object, at, { frameCount: motion.frames, fps: motion.fps }, new THREE.Matrix4());
+			const parent = object.attach && appContext.shared.attachFrameRef?.current?.(object.attach.characterId, object.attach.bone ?? null, new THREE.Matrix4());
+			return parent ? parent.multiply(local) : local;
+		};
+		const applyRaw = at => appContext.shared.poseMemberAtFrame(rig, motion, null, at);
+		const savedKeys = state.keys;
+		let result;
+		try {
+			result = applyRangePin({ ...resolved, ikState: state, pin, objectWorldMatrix, applyRaw,
+				applyLayer(at) { applyRaw(at); ikEvaluate(resolved.chains, state, at, resolved.fkJoints, 6); } });
+		} finally { state.keys = savedKeys; }
+		removeRangePinKeys(state, pin.id);
+		for (const [at, entry] of result.entries) {
+			let frameEntry = state.keys.get(at); if (!frameEntry) state.keys.set(at, (frameEntry = new Map()));
+			for (const [track, key] of entry) { frameEntry.set(track, key); state.tracked.add(track); }
+		}
+		state.pins.set(pin.id, cloneRangePin(pin));
+		state.pinResiduals.set(pin.id, result.residuals.map(entry => ({ ...entry })));
+		// A reload refreshes only the projected bake; authored edits use the bus.
+		if (projectionOnly) Object.assign(appContext.shared.ikStatesRef.current.get(id), state);
+		else setRangePinState(id, state);
+		return { residuals: result.residuals };
 	}
 	function editKeys(id, mutate) {
 		const state = { ...createIkState(), keys: decodeMotionKeys(layer(id).ikKeys) };
@@ -437,7 +486,7 @@ export function createMotionDomain(appContext, characters) {
 		return run('run.update', { txId: gesture.txId, args });
 	}
 	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
-		setKeys, setRangePinState, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, persistTake,
+		setKeys, setRangePinState, bakeRangePin, removePin, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, persistTake,
 		insideAction: () => running > 0, bakeCurrentKey, keyPose, editTrail, autoPhysics, applyPhysics,
 		applyPrepared(token) { const apply = prepared.get(token); if (!apply) throw new StudioProtocolError('STALE_TARGET', 'Prepared motion is no longer available.'); return apply(); },
 		bindRender(context) { appContext = context; },
@@ -629,33 +678,6 @@ export function useMotion(appContext) {
 			setRangePinPreview({ draft, track: draft.track, target: null, conflictFrames, overlapError: rangePinOverlapMessage(overlapping) });
 		}
 	}
-	function writeRangePin(pin, replaceFrames = [], recordUndo = true) {
-		const live = ensureRangePinState(appContext.shared.ikStateRef.current);
-		// Bake into a detached layer so an invalid object target cannot erase
-		// existing keys before the new pin has successfully solved.
-		const state = { ...live, keys: copyPhysicsKeys(live.keys), tracked: new Set(live.tracked), pins: new Map(live.pins), pinResiduals: new Map(live.pinResiduals) };
-		const objectWorldMatrix = pin.target.space === "object" ? (objectId, frame) => rangePinObjectWorldMatrix(objectId, frame) : null;
-		for (const frame of replaceFrames) {
-			const entry = state.keys.get(frame); if (!entry) continue;
-			for (const track of rangePinTracks(pin)) entry.delete(track);
-			if (!entry.size) state.keys.delete(frame);
-		}
-		const savedKeys = state.keys;
-		let result;
-		try {
-			result = applyRangePin({ chains: ikChains, fkJoints: ikFkJoints, ikState: state, pin, objectWorldMatrix, applyRaw: (frame) => appContext.shared.poseMemberAtFrame(appContext.shared.activeRig, motion, null, frame), applyLayer: (frame) => rangePinApplyFrame(frame, state) });
-		} finally { state.keys = savedKeys; }
-		removeRangePinKeys(state, pin.id);
-		for (const [frame, entry] of result.entries) {
-			let frameEntry = state.keys.get(frame); if (!frameEntry) state.keys.set(frame, (frameEntry = new Map()));
-			for (const [track, key] of entry) { frameEntry.set(track, key); state.tracked.add(track); }
-		}
-		state.pins.set(pin.id, cloneRangePin(pin));
-		state.pinResiduals.set(pin.id, result.residuals.map((entry) => ({ ...entry })));
-		domain.setRangePinState(appContext.shared.activeChar.id, state, { recordUndo });
-		setIkTick((value) => value + 1);
-		return result;
-	}
 	function applyRangePinDraft(draft) {
 		if (!motion || !appContext.shared.activeRig || !ikChains) return;
 		const state = ensureRangePinState(appContext.shared.ikStateRef.current);
@@ -665,7 +687,7 @@ export function useMotion(appContext) {
 		if (conflicts.length && !draft.replaceExisting) { appContext.notify(ko("Confirm Replace existing keys before applying this pin.", "이 고정을 적용하려면 기존 키 교체를 확인하세요.")); return; }
 		try {
 			const resolved = captureRangePinTargetForDraft(draft);
-			writeRangePin(resolved.pin, conflicts);
+			domain.run('motion.rangePin.apply', { characterId: appContext.shared.activeChar.id, pin: resolved.pin, replaceExisting: Boolean(draft.replaceExisting) });
 			setRangePinSelection(resolved.pin.id);
 			setRangePinPreview({ draft: { ...draft, id: resolved.pin.id }, track: resolved.pin.track, target: resolved.targetWorld.toArray(), conflictFrames: [], overlapError: "" });
 			appContext.shared.setTlPlaying(false);
@@ -675,8 +697,7 @@ export function useMotion(appContext) {
 	function deleteRangePin(pinId) {
 		const state = ensureRangePinState(appContext.shared.ikStateRef.current), pin = state.pins.get(pinId);
 		if (!pin) return;
-		removeRangePinKeys(state, pinId); state.pins.delete(pinId); state.pinResiduals.delete(pinId);
-		domain.setRangePinState?.(appContext.shared.activeChar.id, state);
+		domain.run('motion.rangePin.remove', { characterId: appContext.shared.activeChar.id, pinId });
 		setRangePinSelection(null); setRangePinPreview(null); setIkTick((value) => value + 1);
 		appContext.notify(isKo ? `${pin.track} 고정을 삭제했어요` : `Deleted ${pin.track} pin`);
 	}
@@ -859,9 +880,8 @@ export function useMotion(appContext) {
 				if (!appContext.shared.sceneObjects.some(object => object.id === pin.target.objectId)) {
 					removeRangePinKeys(state, pin.id);
 					state.pinResiduals.set(pin.id, []);
-					domain.setRangePinState(appContext.shared.activeChar.id, state, { recordUndo: false });
 				} else {
-					try { writeRangePin(pin, [], false); }
+					try { domain.bakeRangePin(appContext.shared.activeChar.id, pin, false, true); }
 					catch { /* A prop can be unavailable while its transform remounts. */ }
 				}
 			}
@@ -3035,7 +3055,10 @@ export function useMotion(appContext) {
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
 		ikTick, setIkTick, committedIkEdits, setCommittedIkEdits, trailFalloffS, setTrailFalloffS, showTrails,
 		setShowTrails, ikEditTool, setIkEditTool, trailEdit, trailFalloffFrames, focusIkHandle, snapshotIkKeys,
-		rangePinApplySpec: (spec) => writeRangePin(normalizeRangePin(spec, { clipFrames: motion.frames })),
+		rangePinApplySpec: (pin) => {
+			domain.run('motion.rangePin.apply', { characterId: appContext.shared.activeChar.id, pin });
+			return { residuals: decodeRangePinResiduals(domain.layer(appContext.shared.activeChar.id).ikPinResiduals).get(pin.id) };
+		},
 		rangePins, rangePinResiduals, rangePinSelection, setRangePinSelection, rangePinPartPick, setRangePinPartPick, rangePinPreview, previewRangePinDraft, applyRangePinDraft, deleteRangePin,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, bridge, setBridge, bridgeChecking,
 		motionSetupReveal, motionSetupKind, setArdyPrompt, setArdyDuration, ardySeed, preserveStrength,

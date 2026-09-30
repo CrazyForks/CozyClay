@@ -40,23 +40,48 @@ await send("Page.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
 await wait("!!window.__cozyclay?.motion && !!window.__cozyclay?.ikChains");
 
-// Enter the same route an operator uses: Motion → Rig → Range pin.
-await ev("document.querySelector('.workflow-mode-switch [title=\"Edit timing and movement\"]')?.click()");
-await ev("document.querySelector('[aria-label=\"Inverse kinematics\"]')?.click()");
-await ev("(()=>{const button=[...document.querySelectorAll('[role=\"row\"] button')].find(e=>e.textContent.trim()==='Rig'); if(!button) throw new Error('Rig hierarchy button not found'); button.click()})()");
-await wait("!!document.querySelector('[data-testid=range-pin-panel]') === false");
-await ev("document.querySelector('[data-testid=range-pin-tool]')?.click()");
-await wait("!!document.querySelector('[data-testid=range-pin-panel]')");
-
-await ev("(()=>{const part=[...document.querySelectorAll('[data-testid=range-pin-panel] button')].find(e=>/왼발|Left Foot/i.test(e.textContent)); part?.click(); const set=(sel,v)=>{const el=document.querySelector(sel); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; setter.call(el,String(v)); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true}));}; set('[data-testid=range-pin-in]',96); set('[data-testid=range-pin-out]',140)})()");
-await ev("document.querySelector('[data-testid=range-pin-apply]')?.click()");
+// Selectors follow App's workflow tabs, hierarchy-panel's tree items and the
+// timeline IK toggle. Support both locales; wait for each actionable control.
+const click = async (selector) => {
+	await wait(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});return !!el && !el.disabled && el.getClientRects().length>0})()`);
+	await ev(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'nearest'});el.click()})()`);
+};
+const motionTab = '.workflow-mode-switch [role="tab"][title="Edit timing and movement"], .workflow-mode-switch [role="tab"][title="타이밍과 움직임 편집"]';
+await click(motionTab);
+await wait(`document.querySelector(${JSON.stringify(motionTab)})?.getAttribute('aria-selected') === 'true'`);
+const characterRow = '[role="treeitem"][aria-selected="true"][data-node-id]';
+await wait(`!!document.querySelector(${JSON.stringify(characterRow)})`);
+const characterNodeId = await ev(`document.querySelector(${JSON.stringify(characterRow)}).dataset.nodeId`);
+const rigRow = `[role="treeitem"][data-node-id="${characterNodeId}.rig"]`;
+const characterSelector = `[role="treeitem"][data-node-id="${characterNodeId}"]`;
+if (await ev(`document.querySelector(${JSON.stringify(characterSelector)})?.getAttribute('aria-expanded') === 'false'`)) {
+	await click(`${characterSelector} > .hierarchy-toggle`);
+}
+await click(`${rigRow} > button.hierarchy-row`);
+await wait(`document.querySelector(${JSON.stringify(rigRow)})?.getAttribute('aria-selected') === 'true'`);
+if (!await ev('window.__cozyclay.ikMode')) {
+	await click('[aria-label="Inverse kinematics"], [aria-label="역운동학"]');
+}
+await wait('window.__cozyclay.ikMode');
+await click('[data-testid="range-pin-tool"]');
+await wait('!!document.querySelector("[data-testid=range-pin-panel]")');
+await wait("[...document.querySelectorAll('[data-testid=range-pin-panel] button')].some(el=>/왼발|Left Foot/i.test(el.textContent) && !el.disabled)");
+await ev("[...document.querySelectorAll('[data-testid=range-pin-panel] button')].find(el=>/왼발|Left Foot/i.test(el.textContent)).click()");
+for (const [selector, value] of [['[data-testid=range-pin-in]', 96], ['[data-testid=range-pin-out]', 140]]) {
+	await wait(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
+	await ev(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(String(value))});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+	await wait(`document.querySelector(${JSON.stringify(selector)})?.value === ${JSON.stringify(String(value))}`);
+}
+await click('[data-testid="range-pin-apply"]');
 await wait("(window.__cozyclay.rangePins||[]).length === 1");
 const pinState = await ev("({pin:window.__cozyclay.rangePins[0]})");
 const samples = [];
 for (const frame of [96, 107, 118, 129, 140]) {
 	await ev(`window.__cozyclay.scrub(${frame})`);
 	await wait(`window.__cozyclay.tlFrame===${frame}`);
-	await sleep(60);
+	// Let the render loop pose the rig after React publishes the playhead.
+	await ev('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+	await wait("Array.isArray(window.__cozyclay.rangePinEffector('leftFoot'))");
 	samples.push({ frame, effector: await ev("window.__cozyclay.rangePinEffector('leftFoot')") });
 }
 const target = pinState.pin.target.position;
@@ -68,8 +93,9 @@ writeFileSync(`${out}/task-2-pin.png`, Buffer.from(screenshot.data, "base64"));
 writeFileSync(`${out}/task-2-pin.json`, JSON.stringify({ route: "/app/?motion=/demo/walk-then-stop.npz", pin: pinState.pin, samples: distances, maxDistanceM, pass: true }, null, 2));
 // Deliberately exceed limb reach through the production solver seam; the
 // actual inspector must show a warning and the rendered rig must stay finite.
-await ev("document.querySelector('.range-pin-delete')?.click()");
+await click('.range-pin-delete');
 await wait("window.__cozyclay.rangePins.length===0");
+await wait("typeof window.__cozyclay.rangePinApplySpec === 'function'");
 const reach = await ev(`(()=>{const pin={...${JSON.stringify(pinState.pin)},id:'qa-unreachable',reach:'limb',target:{space:'world',position:[999,999,999]}}; const result=window.__cozyclay.rangePinApplySpec(pin);return {pin,residuals:result.residuals}})()`);
 await wait("!!document.querySelector('.range-pin-warning')");
 const warning = await ev("document.querySelector('.range-pin-warning').textContent");
