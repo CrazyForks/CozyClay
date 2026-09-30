@@ -967,6 +967,41 @@ check("no plants → planted solve does nothing", lLeg.bones[2].getWorldPosition
 	})());
 }
 
+/* --- exactHinge: one solve reaches a reachable target from a BENT chain -- */
+// The continuity hinge uses the elbow's raw offset from the new line point,
+// which keeps an along-line part; p1 leaves the l0 sphere and the hand lands
+// short, converging only over repeated solves. exactHinge (range pins) drops
+// that part; the default stays as fix-collisions is tuned on.
+{
+	const run = (options) => {
+		const bentRig = makeRig();
+		const bent = resolveIkRig(bentRig).chains.get("rightHand");
+		bent.bones[0].quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), 0.9);
+		bent.bones[1].quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -1.1);
+		bentRig.updateMatrixWorld(true);
+		const root = bent.bones[0].getWorldPosition(v());
+		const elbowBefore = bent.bones[1].getWorldPosition(v());
+		let worst = 0;
+		let sideKept = true;
+		for (const offset of [[0, -0.08, 0.05], [0.1, 0.02, 0], [0, 0.12, -0.06], [-0.05, -0.1, 0.1]]) {
+			const target = bent.bones[2].getWorldPosition(v()).add(new THREE.Vector3(...offset));
+			const elbow = bent.bones[1].getWorldPosition(v()).sub(root);
+			const line = target.clone().sub(root).normalize();
+			const sideBefore = elbow.addScaledVector(line, -elbow.dot(line));
+			solveIk(bent, target, options);
+			worst = Math.max(worst, bent.bones[2].getWorldPosition(v()).distanceTo(target));
+			const after = bent.bones[1].getWorldPosition(v()).sub(root);
+			if (after.addScaledVector(line, -after.dot(line)).dot(sideBefore) <= 0) sideKept = false;
+		}
+		return { worst, sideKept, moved: bent.bones[1].getWorldPosition(v()).distanceTo(elbowBefore) };
+	};
+	const exact = run({ exactHinge: true });
+	const legacy = run(undefined);
+	check("fixture: the default hinge lands short from a bent chain (> 1 mm)", legacy.worst > 0.001, `worst=${(legacy.worst * 1000).toFixed(3)}mm`);
+	check("exactHinge reaches each reachable target in ONE solve (< 1e-6 m)", exact.worst < 1e-6, `worst=${(exact.worst * 1000).toFixed(3)}mm`);
+	check("exactHinge keeps the elbow on its side of the line", exact.sideKept && exact.moved > 0.01);
+}
+
 // Keep the measured translation-step regression in the registered IK suite.
 await import("./translation-step.mjs");
 

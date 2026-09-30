@@ -227,6 +227,7 @@ import {
 	IkHandles,
 	PoseHandles,
 	PoseStudioPanel,
+	RangePinMarker,
 	warmPoseThumbnails,
 } from "./posestudio.jsx";
 
@@ -1233,6 +1234,7 @@ export default function App() {
 	}
 
 	const motionDomain = useMotion(appContext.forRender({
+		get attachFrameRef() { return attachFrameRef; },
 		get PROMPT_BLOCK_MAX_FRAMES() { return PROMPT_BLOCK_MAX_FRAMES; },
 		get activeChar() { return activeChar; },
 		get activeCharIndex() { return activeCharIndex; },
@@ -1338,6 +1340,7 @@ export default function App() {
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
 		ikTick, setIkTick, committedIkEdits, setCommittedIkEdits, trailFalloffS, setTrailFalloffS, showTrails,
 		setShowTrails, ikEditTool, setIkEditTool, trailEdit, trailFalloffFrames, focusIkHandle, snapshotIkKeys,
+		rangePins, rangePinResiduals, rangePinSelection, setRangePinSelection, rangePinPartPick, setRangePinPartPick, rangePinPreview, previewRangePinDraft, applyRangePinDraft, deleteRangePin,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, bridge, setBridge, bridgeChecking,
 		motionSetupReveal, motionSetupKind, setArdyPrompt, setArdyDuration, ardySeed, preserveStrength,
 		setPreserveStrength, takeRecipe, takeVersions, replayNotices, sceneMenuOpen, setSceneMenuOpen,
@@ -1414,7 +1417,6 @@ export default function App() {
 
 	const objectsDomain = useObjects(appContext.forRender({
 		get animatedSceneObjects() { return animatedSceneObjects; },
-		get attachFrameRef() { return attachFrameRef; },
 		get castMemberOf() { return castMemberOf; },
 		get charIdFromHierarchyId() { return charIdFromHierarchyId; },
 		get characters() { return characters; },
@@ -4017,6 +4019,14 @@ export default function App() {
 	window.__cozyclay = {
 			runArdy: (options) => appContext.live.state.runArdy(options),
 			rigA: activeRig, motion, tlFrame, frameCount: tlFrameCount, playing: tlPlaying, ikMode, ikChains, ikFocus, contactRadii: ikChains?.values().next().value?.contactRadii ?? null, ik: ikStateRef.current,
+			rangePins, rangePinResiduals,
+			rangePinApplySpec: motionDomain.rangePinApplySpec,
+			rangePinEffector: (track) => {
+				const chain = ikChains?.get(track), bone = chain?.bones?.[2];
+				if (!bone) return null;
+				const point = new THREE.Vector3(); bone.getWorldPosition(point);
+				return point.toArray();
+			},
 			committedIkEdits, waypoints,
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
@@ -4166,7 +4176,7 @@ export default function App() {
 		// close over them: a stale closure would report the set as it was two
 		// edits ago — and, after an undo that removes a subject, would keep
 		// reporting the ghost's capsules.
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, preview, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning]);
+	}, [activeRig, motion, tlFrame, tlFrameCount, ikMode, ikChains, ikFocus, ikTick, charA, rangePins, rangePinResiduals, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, preview, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -7324,11 +7334,19 @@ export default function App() {
 								chains={ikChains}
 								fkJoints={ikFkJoints}
 								ikState={ikStateRef.current}
-								enabled={ikMode && ikEditTool === "ik" && !posing && !playMode}
+								enabled={ikMode && (ikEditTool === "ik" || ikEditTool === "pin") && !posing && !playMode}
+								selectionOnly={ikEditTool === "pin"}
+								onPartPick={(track) => { setRangePinPartPick(track); setRangePinSelection(null); }}
 								focus={ikFocus}
 								onFocus={focusIkHandle}
 								onSolve={ikSolve}
 								onDragEnd={ikDragEnd}
+							/>
+							<RangePinMarker
+								chains={ikChains}
+								track={rangePinPreview?.track}
+								target={rangePinPreview?.target}
+								enabled={ikMode && ikEditTool === "pin" && Boolean(rangePinPreview?.target)}
 							/>
 							{/* The tutorial's top view is the landing playground's: camera, cast
 							    and the rail only, so the line the Rail step asks for is drawn on
@@ -7954,6 +7972,17 @@ export default function App() {
 						trailReadinessState={trailReadinessState}
 						openMotionSetup={openMotionSetup}
 						recheckMotionHealth={recheckMotionHealth}
+						rangePins={rangePins}
+						rangePinResiduals={rangePinResiduals}
+						rangePinSelection={rangePinSelection}
+						rangePinPartPick={rangePinPartPick}
+						rangePinPreview={rangePinPreview}
+						objects={sceneObjects}
+						setRangePinSelection={setRangePinSelection}
+						setRangePinPartPick={setRangePinPartPick}
+						previewRangePinDraft={previewRangePinDraft}
+						applyRangePinDraft={applyRangePinDraft}
+						deleteRangePin={deleteRangePin}
 					/>
 
 				<EnvironmentPanel
@@ -8198,6 +8227,9 @@ export default function App() {
 				onMotionSpeedChange={changeMotionSegmentSpeed}
 				onMotionSegmentRemove={removeMotionSegmentById}
 				ikFrames={ikFrames}
+				rangePins={rangePins}
+				selectedPinId={rangePinSelection}
+				pendingPinRange={ikMode && ikEditTool === "pin" ? rangePinPreview?.draft ?? null : null}
 				footSnap={footSnap}
 				bodyContact={bodyContact}
 					shots={shots}
@@ -8232,6 +8264,7 @@ export default function App() {
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
+				onPinSelect={(id) => { setRangePinSelection(id); setIkEditTool("pin"); }}
 				onBodyContactToggle={() => {
 					setBodyContact((v) => {
 						setToast(v ? ko("Body contact off — floor constraints are disabled", "바닥 접촉 꺼짐 — 바닥 제약이 비활성화됩니다") : ko("Body contact on — body markers stay above the floor", "바닥 접촉 켜짐 — 신체 접촉점이 바닥 아래로 내려가지 않습니다"));
