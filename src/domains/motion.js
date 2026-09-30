@@ -2,7 +2,7 @@ import {
 	FAL_MOTION_STILL_OUTPUT, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_MIN_DURATION,
 	waitForFalMotionJob, submitFalMotion, buildH3MotionPrompt,
 } from "../fal-motion-client.js";
-import { useState, useEffect, useSyncExternalStore, useContext, useRef } from "react";
+import { useState, useEffect, useSyncExternalStore, useContext, useRef, useMemo } from "react";
 import { AppContext } from '../app-context.js';
 import { createDocumentStore } from '../document-store.js';
 import { useDocumentDomain } from '../store/use-document-store.js';
@@ -100,9 +100,11 @@ import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
 import { openMotionDb, getMotion, putMotion } from "../motion-store.js";
 import { resolveMotionSource, decodeMotionResource, encodeMotionResource, sha256Hex } from "../motion-resources.js";
+import { applyRangePin, captureRangePinTarget, normalizeRangePin, rangePinTargetWorld, rangePinTracks, removeRangePinKeys } from "../ardy/range-pin.js";
+import { rangePinObjectMatrixAt } from "../range-pin-object-transform.js";
 
 const sameMotionIntent = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const emptyMotionLayer = id => ({ id, take: null, fullTake: null, ikKeys: [], committedIkEdits: [], takeRecipe: null, takeVersions: [] });
+const emptyMotionLayer = id => ({ id, take: null, fullTake: null, ikKeys: [], ikPins: [], ikPinResiduals: [], committedIkEdits: [], takeRecipe: null, takeVersions: [] });
 const keyVector = p => ({ x: p.x, y: p.y, z: p.z });
 const keyQuaternion = q => ({ ...keyVector(q), w: q.w });
 function encodeMotionKeys(keys) {
@@ -111,6 +113,7 @@ function encodeMotionKeys(keys) {
 		...(key.baseQ ? { baseQ: key.baseQ.map(keyQuaternion) } : {}), ...(key.basePos ? { basePos: keyVector(key.basePos) } : {}),
 		...(key.chainP ? { chainP: key.chainP.map(keyVector) } : {}), ...(key.keepTranslations ? { keepTranslations: true } : {}),
 		...(key.blend != null ? { blend: key.blend } : {}),
+		...(key.pin ? { pin: key.pin } : {}),
 	}])) }));
 }
 function decodeMotionKeys(rows) {
@@ -121,7 +124,28 @@ function decodeMotionKeys(rows) {
 		...(key.baseQ ? { baseQ: key.baseQ.map(q) } : {}), ...(key.basePos ? { basePos: p(key.basePos) } : {}),
 		...(key.chainP ? { chainP: key.chainP.map(p) } : {}), ...(key.keepTranslations ? { keepTranslations: true } : {}),
 		...(key.blend != null ? { blend: key.blend } : {}),
+		...(key.pin ? { pin: key.pin } : {}),
 	}]))]));
+}
+function cloneRangePin(pin) {
+	return {
+		...pin,
+		target: pin.target.space === "world"
+			? { space: "world", position: [...pin.target.position] }
+			: { space: "object", objectId: pin.target.objectId, local: [...pin.target.local] },
+	};
+}
+function encodeRangePins(pins) {
+	return [...(pins instanceof Map ? pins.values() : pins ?? [])].map(cloneRangePin);
+}
+function decodeRangePins(rows) {
+	return new Map((rows ?? []).map((pin) => [pin.id, cloneRangePin(pin)]));
+}
+function encodeRangePinResiduals(values) {
+	return [...(values instanceof Map ? values.entries() : values ?? [])].map(([id, entries]) => [id, (entries ?? []).map((entry) => ({ ...entry }))]);
+}
+function decodeRangePinResiduals(rows) {
+	return new Map((rows ?? []).map(([id, entries]) => [id, (entries ?? []).map((entry) => ({ ...entry }))]));
 }
 
 // Plain intent owns take identities and JSON keys. Decoded buffers and rig
@@ -147,7 +171,7 @@ export function createMotionDomain(appContext, characters) {
 	}
 	const normalize = rows => rows.map(row => ({ ...emptyMotionLayer(row.id), ...row,
 		take: snapshotTake(row.take), fullTake: snapshotTake(row.fullTake ?? row.take),
-		ikKeys: row.ikKeys ?? [], committedIkEdits: row.committedIkEdits ?? [] }));
+		ikKeys: row.ikKeys ?? [], ikPins: row.ikPins ?? [], ikPinResiduals: row.ikPinResiduals ?? [], committedIkEdits: row.committedIkEdits ?? [] }));
 	let native = createDocumentStore({ owned: { motion: normalize(references(characters)) } });
 	const listeners = new Set(), notify = () => { for (const listener of listeners) listener(); };
 	let release = native.subscribe(notify), viewRevision = 0;
@@ -180,6 +204,8 @@ export function createMotionDomain(appContext, characters) {
 			if (full) appContext.shared.motionFullRef.current.set(id, full); else appContext.shared.motionFullRef.current.delete(id);
 			const state = states.get(id) ?? createIkState();
 			state.keys = decodeMotionKeys(row.ikKeys); state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
+			state.pins = decodeRangePins(row.ikPins);
+			state.pinResiduals = decodeRangePinResiduals(row.ikPinResiduals);
 			states.set(id, state);
 			const rig = rigFor(id);
 			if (rig) {
@@ -227,6 +253,59 @@ export function createMotionDomain(appContext, characters) {
 		};
 	}
 	function setKeys(id, keys) { return writeLayer(id, { ikKeys: encodeMotionKeys(keys) }); }
+	function setRangePinState(id, state) {
+		return writeLayer(id, { ikKeys: encodeMotionKeys(state.keys), ikPins: encodeRangePins(state.pins), ikPinResiduals: encodeRangePinResiduals(state.pinResiduals) });
+	}
+	function rangePinState(id) {
+		const row = layer(id), keys = decodeMotionKeys(row.ikKeys);
+		return { ...createIkState(), keys, tracked: new Set([...keys.values()].flatMap(entry => [...entry.keys()])), pins: decodeRangePins(row.ikPins), pinResiduals: decodeRangePinResiduals(row.ikPinResiduals) };
+	}
+	function removePin(id, pinId) {
+		const state = rangePinState(id);
+		removeRangePinKeys(state, pinId); state.pins.delete(pinId); state.pinResiduals.delete(pinId);
+		setRangePinState(id, state);
+	}
+	function bakeRangePin(id, spec, replaceExisting = false, projectionOnly = false) {
+		const motion = motionFor(id), rig = rigFor(id), resolved = rig && resolveIkRig(rig);
+		if (!motion || !resolved) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take and rig for this character first.');
+		const pin = normalizeRangePin(spec, { clipFrames: motion.frames }), state = rangePinState(id);
+		const tracks = rangePinTracks(pin);
+		const overlap = [...state.pins.values()].find(other => other.id !== pin.id && rangePinTracks(other).some(track => tracks.includes(track)) && Math.max(pin.startFrame, other.startFrame) <= Math.min(pin.endFrame, other.endFrame));
+		if (overlap) throw new StudioProtocolError('INVALID_ARGUMENT', 'A required track already has an overlapping pin.');
+		for (let at = pin.startFrame; at <= pin.endFrame; at++) {
+			const entry = state.keys.get(at); if (!entry) continue;
+			for (const track of tracks) if (entry.has(track) && entry.get(track).pin !== pin.id) {
+				if (!replaceExisting) throw new StudioProtocolError('INVALID_ARGUMENT', 'Confirm Replace existing keys before applying this pin.');
+				entry.delete(track);
+			}
+			if (!entry.size) state.keys.delete(at);
+		}
+		const objectWorldMatrix = (objectId, at) => {
+			const object = appContext.shared.sceneObjects.find(entry => entry.id === objectId);
+			if (!object) return null;
+			const local = rangePinObjectMatrixAt(object, at, { frameCount: motion.frames, fps: motion.fps }, new THREE.Matrix4());
+			const parent = object.attach && appContext.shared.attachFrameRef?.current?.(object.attach.characterId, object.attach.bone ?? null, new THREE.Matrix4());
+			return parent ? parent.multiply(local) : local;
+		};
+		const applyRaw = at => appContext.shared.poseMemberAtFrame(rig, motion, null, at);
+		const savedKeys = state.keys;
+		let result;
+		try {
+			result = applyRangePin({ ...resolved, ikState: state, pin, objectWorldMatrix, applyRaw,
+				applyLayer(at) { applyRaw(at); ikEvaluate(resolved.chains, state, at, resolved.fkJoints, 6); } });
+		} finally { state.keys = savedKeys; }
+		removeRangePinKeys(state, pin.id);
+		for (const [at, entry] of result.entries) {
+			let frameEntry = state.keys.get(at); if (!frameEntry) state.keys.set(at, (frameEntry = new Map()));
+			for (const [track, key] of entry) { frameEntry.set(track, key); state.tracked.add(track); }
+		}
+		state.pins.set(pin.id, cloneRangePin(pin));
+		state.pinResiduals.set(pin.id, result.residuals.map(entry => ({ ...entry })));
+		// A reload refreshes only the projected bake; authored edits use the bus.
+		if (projectionOnly) Object.assign(appContext.shared.ikStatesRef.current.get(id), state);
+		else setRangePinState(id, state);
+		return { residuals: result.residuals };
+	}
 	function editKeys(id, mutate) {
 		const state = { ...createIkState(), keys: decodeMotionKeys(layer(id).ikKeys) };
 		state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
@@ -240,17 +319,17 @@ export function createMotionDomain(appContext, characters) {
 	}
 	function castWrite(update) { return appContext.recordAction('cast', () => appContext.storeDomain('cast').write(update), null, true); }
 	function synchronizeTimeline() { appContext.storeDomain('cast').syncTimeline(); }
-	function replace(id, take, { fullTake = take, ikKeys = [],
+	function replace(id, take, { fullTake = take, ikKeys = [], ikPins = [], ikPinResiduals = [],
 		recipe = take ? { seed: null, blocks: [{ prompt: take.prompt ?? '', duration: take.frames / take.fps }], lineEdits: [] } : null,
 		versions = take?.url ? pushTakeVersion(layer(id).takeVersions, { motionUrl: take.url, recipe, savedAt: Date.now(), label: ko('Loaded', '불러옴') }, TAKE_VERSIONS_MAX) : layer(id).takeVersions,
 	} = {}) {
 		previews.delete(id);
-		writeLayer(id, { take: snapshotTake(take), fullTake: snapshotTake(fullTake), ikKeys, takeRecipe: recipe, takeVersions: versions, committedIkEdits: [] });
+		writeLayer(id, { take: snapshotTake(take), fullTake: snapshotTake(fullTake), ikKeys, ikPins, ikPinResiduals, takeRecipe: recipe, takeVersions: versions, committedIkEdits: [] });
 		synchronizeTimeline();
 	}
 	function clear(id) {
 		previews.delete(id);
-		writeLayer(id, { take: null, fullTake: null, ikKeys: [], committedIkEdits: [], takeRecipe: null });
+		writeLayer(id, { take: null, fullTake: null, ikKeys: [], ikPins: [], ikPinResiduals: [], committedIkEdits: [], takeRecipe: null });
 		castWrite(rows => rows.map(row => row.id === id ? { ...row, scale: 1, motionRef: null } : row));
 		synchronizeTimeline();
 	}
@@ -407,7 +486,7 @@ export function createMotionDomain(appContext, characters) {
 		return run('run.update', { txId: gesture.txId, args });
 	}
 	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
-		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, persistTake,
+		setKeys, setRangePinState, bakeRangePin, removePin, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, persistTake,
 		insideAction: () => running > 0, bakeCurrentKey, keyPose, editTrail, autoPhysics, applyPhysics,
 		applyPrepared(token) { const apply = prepared.get(token); if (!apply) throw new StudioProtocolError('STALE_TARGET', 'Prepared motion is no longer available.'); return apply(); },
 		bindRender(context) { appContext = context; },
@@ -524,6 +603,12 @@ export function useMotion(appContext) {
 	const [ikEditTool, setIkEditTool] = useState("ik");
 
 	const [trailEdit, setTrailEdit] = useState(null);
+	const [rangePinSelection, setRangePinSelection] = useState(null);
+	const [rangePinPartPick, setRangePinPartPick] = useState(null);
+	const [rangePinPreview, setRangePinPreview] = useState(null);
+	const pinLayer = domain.layer(appContext.shared.activeChar.id);
+	const rangePins = useMemo(() => encodeRangePins(pinLayer.ikPins), [pinLayer.ikPins]);
+	const rangePinResiduals = useMemo(() => decodeRangePinResiduals(pinLayer.ikPinResiduals), [pinLayer.ikPinResiduals]);
 
 	const trailFalloffFrames = Math.max(1, Math.round(trailFalloffS * TIMELINE_FPS));
 
@@ -533,6 +618,96 @@ export function useMotion(appContext) {
 		if (hierarchyId) {
 			appContext.shared.setSelectedHierarchyId(hierarchyId);
 		}
+	}
+
+	function ensureRangePinState(state) {
+		if (!state) return state;
+		if (!(state.pins instanceof Map)) state.pins = new Map();
+		if (!(state.pinResiduals instanceof Map)) state.pinResiduals = new Map();
+		return state;
+	}
+	function rangePinObjectWorldMatrix(objectId, frame) {
+		const object = appContext.shared.sceneObjects.find((entry) => entry.id === objectId);
+		if (!object) return null;
+		const local = rangePinObjectMatrixAt(object, frame, { frameCount: motion?.frames ?? appContext.shared.tlFrameCount, fps: motion?.fps ?? appContext.shared.tlFps }, new THREE.Matrix4());
+		if (!object.attach) return local;
+		const attachRef = appContext.shared.attachFrameRef?.current;
+		if (!attachRef) return local;
+		const parent = attachRef(object.attach.characterId, object.attach.bone ?? null, new THREE.Matrix4());
+		return parent ? parent.multiply(local) : local;
+	}
+	function rangePinApplyFrame(frame, state = appContext.shared.ikStateRef.current) {
+		appContext.shared.poseMemberAtFrame(appContext.shared.activeRig, motion, null, frame);
+		if (ikChains && state.keys.size > 0) ikEvaluate(ikChains, state, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+	}
+	function rangePinConflictFrames(draft, state = appContext.shared.ikStateRef.current) {
+		if (!Number.isInteger(draft?.startFrame) || !Number.isInteger(draft?.endFrame) || draft.endFrame < draft.startFrame) return [];
+		const tracks = rangePinTracks(draft), conflicts = [];
+		for (let frame = draft.startFrame; frame <= draft.endFrame; frame += 1) {
+			if (tracks.some((track) => { const key = state.keys.get(frame)?.get(track); return key && key.pin !== draft.id; })) conflicts.push(frame);
+		}
+		return conflicts;
+	}
+	function overlappingRangePin(draft, state = appContext.shared.ikStateRef.current) {
+		return [...ensureRangePinState(state).pins.values()].find((pin) => pin.id !== draft.id && rangePinTracks(pin).some((track) => rangePinTracks(draft).includes(track)) && Math.max(pin.startFrame, draft.startFrame) <= Math.min(pin.endFrame, draft.endFrame));
+	}
+	function rangePinOverlapMessage(pin) {
+		return pin ? ko(`A required body or limb track already has an overlapping pin (${pin.startFrame}–${pin.endFrame}).`, `필요한 몸통 또는 팔다리 파츠에 겹치는 고정이 있어요 (${pin.startFrame}–${pin.endFrame}).`) : "";
+	}
+	function captureRangePinTargetForDraft(draft) {
+		if (!motion || !appContext.shared.activeRig || !ikChains) return null;
+		const objectWorldMatrix = draft.targetKind === "object" ? (objectId, frame) => rangePinObjectWorldMatrix(objectId, frame) : null;
+		const target = captureRangePinTarget({
+			chains: ikChains, track: draft.track, frame: draft.startFrame,
+			applyFrame: (frame) => rangePinApplyFrame(frame),
+			space: draft.targetKind === "object" ? "object" : "world",
+			objectId: draft.targetKind === "object" ? draft.objectId : null,
+			objectWorldMatrix,
+		});
+		const pin = normalizeRangePin({ id: draft.id, track: draft.track, startFrame: draft.startFrame, endFrame: draft.endFrame, blend: draft.blend, reach: draft.reach ?? "body", target }, { clipFrames: motion.frames });
+		return { pin, targetWorld: rangePinTargetWorld(pin, appContext.shared.tlFrame, { objectWorldMatrix }) };
+	}
+	function previewRangePinDraft(draft) {
+		const state = ensureRangePinState(appContext.shared.ikStateRef.current);
+		const conflictFrames = rangePinConflictFrames(draft, state);
+		const overlapping = overlappingRangePin(draft, state);
+		try {
+			const resolved = captureRangePinTargetForDraft(draft);
+			setRangePinPreview({ draft, track: draft.track, target: resolved?.targetWorld?.toArray() ?? null, conflictFrames, overlapError: rangePinOverlapMessage(overlapping) });
+		} catch {
+			setRangePinPreview({ draft, track: draft.track, target: null, conflictFrames, overlapError: rangePinOverlapMessage(overlapping) });
+		}
+	}
+	function applyRangePinDraft(draft) {
+		if (!motion || !appContext.shared.activeRig || !ikChains) return;
+		const state = ensureRangePinState(appContext.shared.ikStateRef.current);
+		const overlap = overlappingRangePin(draft, state);
+		if (overlap) { appContext.notify(rangePinOverlapMessage(overlap)); return; }
+		const conflicts = rangePinConflictFrames(draft, state);
+		if (conflicts.length && !draft.replaceExisting) { appContext.notify(ko("Confirm Replace existing keys before applying this pin.", "이 고정을 적용하려면 기존 키 교체를 확인하세요.")); return; }
+		try {
+			const resolved = captureRangePinTargetForDraft(draft);
+			domain.run('motion.rangePin.apply', { characterId: appContext.shared.activeChar.id, pin: resolved.pin, replaceExisting: Boolean(draft.replaceExisting) });
+			setRangePinSelection(resolved.pin.id);
+			setRangePinPreview({ draft: { ...draft, id: resolved.pin.id }, track: resolved.pin.track, target: resolved.targetWorld.toArray(), conflictFrames: [], overlapError: "" });
+			appContext.shared.setTlPlaying(false);
+			appContext.notify(isKo ? `${resolved.pin.track} 고정을 적용했어요 · ${resolved.pin.startFrame}–${resolved.pin.endFrame}프레임` : `Applied ${resolved.pin.track} pin · frames ${resolved.pin.startFrame}–${resolved.pin.endFrame}`);
+		} catch (error) { appContext.notify(ko(`Could not apply pin — ${error.message}`, `고정을 적용하지 못했어요 — ${error.message}`)); }
+	}
+	function deleteRangePin(pinId) {
+		const state = ensureRangePinState(appContext.shared.ikStateRef.current), pin = state.pins.get(pinId);
+		if (!pin) return;
+		domain.run('motion.rangePin.remove', { characterId: appContext.shared.activeChar.id, pinId });
+		// Persisting the command updates the document before React publishes the
+		// next render. Clear the live evaluator now too, so a draft preview made
+		// during that transition cannot report the deleted pin as overlapping.
+		const liveState = ensureRangePinState(appContext.shared.ikStateRef.current);
+		removeRangePinKeys(liveState, pinId);
+		liveState.pins.delete(pinId);
+		liveState.pinResiduals.delete(pinId);
+		liveState.tracked = new Set([...liveState.keys.values()].flatMap((entry) => [...entry.keys()]));
+		setRangePinSelection(null); setRangePinPreview(null); setIkTick((value) => value + 1);
+		appContext.notify(isKo ? `${pin.track} 고정을 삭제했어요` : `Deleted ${pin.track} pin`);
 	}
 
 	/** Deep copy of an IK state's key map: frame → Map(trackId → {q,p}), with
@@ -604,6 +779,8 @@ export function useMotion(appContext) {
 			target.keys.clear();
 			target.tracked.clear();
 			target.plants.clear();
+			target.pins?.clear();
+			target.pinResiduals?.clear();
 		});
 		return count;
 	}
@@ -698,6 +875,28 @@ export function useMotion(appContext) {
 
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const motion = domain.visibleMotion(appContext.shared.activeChar.id);
+	const rangePinRebuildRef = useRef(null);
+	const rangePinSourceStamp = JSON.stringify([pinLayer.take, appContext.shared.activeChar.id]);
+	// Object-bound pins follow edited prop transforms and paths, as in the
+	// source branch. Rebuilding derived keys must not create an undo entry.
+	useEffect(() => {
+		if (!motion || !ikChains || rangePinRebuildRef.current === rangePinSourceStamp) return;
+		const timer = setTimeout(() => {
+			rangePinRebuildRef.current = rangePinSourceStamp;
+			const state = ensureRangePinState(appContext.shared.ikStateRef.current);
+			for (const pin of [...state.pins.values()].filter(pin => pin.target.space === "object")) {
+				if (!appContext.shared.sceneObjects.some(object => object.id === pin.target.objectId)) {
+					removeRangePinKeys(state, pin.id);
+					state.pinResiduals.set(pin.id, []);
+				} else {
+					try { domain.bakeRangePin(appContext.shared.activeChar.id, pin, false, true); }
+					catch { /* A prop can be unavailable while its transform remounts. */ }
+				}
+			}
+		}, 150);
+		return () => clearTimeout(timer);
+	}, [rangePinSourceStamp, ikChains]);
+
 
 	const [motionBusy, setMotionBusy] = useState(false);
 
@@ -2864,6 +3063,11 @@ export function useMotion(appContext) {
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
 		ikTick, setIkTick, committedIkEdits, setCommittedIkEdits, trailFalloffS, setTrailFalloffS, showTrails,
 		setShowTrails, ikEditTool, setIkEditTool, trailEdit, trailFalloffFrames, focusIkHandle, snapshotIkKeys,
+		rangePinApplySpec: (pin) => {
+			domain.run('motion.rangePin.apply', { characterId: appContext.shared.activeChar.id, pin });
+			return { residuals: decodeRangePinResiduals(domain.layer(appContext.shared.activeChar.id).ikPinResiduals).get(pin.id) };
+		},
+		rangePins, rangePinResiduals, rangePinSelection, setRangePinSelection, rangePinPartPick, setRangePinPartPick, rangePinPreview, previewRangePinDraft, applyRangePinDraft, deleteRangePin,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, bridge, setBridge, bridgeChecking,
 		motionSetupReveal, motionSetupKind, setArdyPrompt, setArdyDuration, ardySeed, preserveStrength,
 		setPreserveStrength, takeRecipe, takeVersions, replayNotices, sceneMenuOpen, setSceneMenuOpen,

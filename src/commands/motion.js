@@ -17,6 +17,15 @@ const setInput = elementSetSchema('motion');
 // A collection transaction has no single native character target. Normalize
 // that scope explicitly so begin/update carry the same target sentinel.
 for (const variant of setInput.oneOf) variant.properties.characterId = { type: 'null', default: null };
+const vector3 = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
+const rangePin = input({ id: { ...id, maxLength: 64 }, track: { type: 'string', enum: ['leftHand', 'rightHand', 'leftFoot', 'rightFoot'] },
+	startFrame: frame, endFrame: frame, blend: { type: 'integer', minimum: 1, maximum: 240 }, reach: { type: 'string', enum: ['limb', 'body'] },
+	target: { oneOf: [input({ space: { const: 'world' }, position: vector3 }), input({ space: { const: 'object' }, objectId: id, local: vector3 })] },
+}, ['id', 'track', 'startFrame', 'endFrame', 'blend', 'target']);
+const rangePins = [
+	mutation('motion.rangePin.apply', 'Apply range pin', { characterId: id, pin: rangePin, replaceExisting: { type: 'boolean', default: false } }, ['characterId', 'pin']),
+	mutation('motion.rangePin.remove', 'Remove range pin', { characterId: id, pinId: id }),
+];
 const edits = [
 	{ ...mutation('motion.set', 'Set take fields', {}), input: setInput },
 	mutation('motion.trim', 'Trim motion', { characterId: id, start: frame, end: frame }),
@@ -61,7 +70,7 @@ const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear t
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
 const videoDraft = { id: 'motion.setVideoDraft', label: 'Set video motion draft', description: 'Set the uncommitted AI-video form without changing the project or its history.', kind: 'transient',
 	input: input({ instruction: { oneOf: [{ const: '' }, { type: 'string', maxLength: 3700 }] }, promptOverride: { oneOf: [{ const: '' }, { type: 'string', maxLength: 3700 }] }, duration: { oneOf: FAL_MOTION_DURATIONS.map(value => ({ const: value })) } }, []) };
-export const declarations = Object.freeze([videoDraft, generate, ...queued, prepared, ...loads, physics, ...tools, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([videoDraft, generate, ...queued, prepared, ...loads, physics, ...tools, ...rangePins, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
@@ -116,6 +125,13 @@ export function register(registry, ports) {
 			owner().keyPose(args.characterId, args.frame, args.pose);
 		}
 		return { affectedIds: [args.characterId], summary: declaration.label };
+	} });
+	for (const declaration of rangePins) registry.register({ ...declaration, available: mounted, run(args) {
+		characterOf(ports, args.characterId);
+		const output = declaration.id === 'motion.rangePin.apply'
+			? owner().bakeRangePin(args.characterId, args.pin, args.replaceExisting)
+			: owner().removePin(args.characterId, args.pinId);
+		return { affectedIds: [args.characterId], summary: declaration.label, ...(output ? { output } : {}) };
 	} });
 	registerElementSet({ register(entry) { registry.register({ ...entry, available: mounted, run(args) {
 		for (const op of args.ops ?? [args]) take(op.id);

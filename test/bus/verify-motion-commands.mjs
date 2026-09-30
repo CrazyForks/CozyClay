@@ -20,7 +20,10 @@ function collide(f) {
   solveIk(resolved.chains.get('leftHand'), chest.getWorldPosition(new THREE.Vector3()));
   rig.updateMatrixWorld(true);
 }
+const pin = { id: 'parity-pin', track: 'leftFoot', startFrame: 5, endFrame: 5, blend: 6, reach: 'limb', target: { space: 'world', position: [0, 0, 0] } };
 const cases = {
+  'motion.rangePin.apply': () => ({ characterId: 'actor-a', pin }),
+  'motion.rangePin.remove': () => ({ characterId: 'actor-a', pinId: pin.id }),
   'motion.clear': () => ({ characterId: 'actor-a' }),
   'motion.trim': () => ({ characterId: 'actor-a', start: 4, end: 39 }),
   'motion.resetTrim': () => ({ characterId: 'actor-a' }),
@@ -38,6 +41,7 @@ const cases = {
 };
 async function prepare(f, command) {
   seed(f);
+  if (command === 'motion.rangePin.remove') ok(f.run('motion.rangePin.apply', { characterId: 'actor-a', pin }));
   if (command === 'motion.applyPhysics') {
     const take = seedMotion(12);
     for (let frame = 0; frame < take.frames; frame++) {

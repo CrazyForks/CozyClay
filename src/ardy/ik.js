@@ -529,8 +529,12 @@ export function resolveIkRig(rig) {
  * root→effector reach with a soft clamp: past the cap the effector approaches
  * it asymptotically and never exceeds it, so a locked foot cannot straighten
  * the leg past the extension the source pose actually had.
+ *
+ * `exactHinge` makes the one-step claim hold for a BENT chain too: without it
+ * the continuity hinge keeps an along-line component and a solve from a bent
+ * pose lands short of a reachable target, converging only over repeated calls.
  */
-export function solveIk(chain, targetWorld, { maxExtension = null, softening = 0.01 } = {}) {
+export function solveIk(chain, targetWorld, { maxExtension = null, softening = 0.01, exactHinge = false } = {}) {
 	// Playback owns translations. Measure this frame's lengths rather than
 	// resetting to bind, which turns a small target move into length compensation.
 	const { bones, poleLocal, rig } = chain;
@@ -596,6 +600,10 @@ export function solveIk(chain, targetWorld, { maxExtension = null, softening = 0
 	if (isBent) {
 		// Continuity: reuse the elbow's current offset from the line.
 		bend = p1cur.clone().sub(linePoint);
+		// Only the part perpendicular to dir is a side; the along-dir remainder
+		// puts p1 off the l0 sphere and the effector misses (up to cm). Opt-in:
+		// fix-collisions and its fixtures are tuned on the legacy result.
+		if (exactHinge) bend.addScaledVector(dir, -bend.dot(dir));
 	}
 	if (!bend || bend.lengthSq() < 1e-8) {
 		// Straight chain — no side to continue; use the pole hint.
