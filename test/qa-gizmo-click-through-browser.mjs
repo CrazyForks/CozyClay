@@ -55,9 +55,14 @@ const mouse = (type, x, y) => send("Input.dispatchMouseEvent", {
 	buttons: type === "mouseReleased" ? 0 : 1,
 });
 const addObject = async (label) => {
-	await evaluate("document.querySelector('.add-object-trigger').click()");
-	await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-	await evaluate(`[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('${label}'))?.click()`);
+	await evaluate(`(() => {
+		const row = document.querySelector('.v2-outliner [data-node-id="light"]');
+		const box = row.getBoundingClientRect();
+		row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(box.left + 28), clientY: Math.round(box.top + 12), button: 2 }));
+		return true;
+	})()`);
+	await waitFor("document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item').length > 0");
+	await evaluate(`[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find(b => b.textContent.startsWith(${JSON.stringify(label)}))?.click()`);
 	await waitFor("(window.__gizmoHandles?.().length ?? 0) > 0");
 };
 /** commit one Position field through the inspector, the way a user types it */
@@ -73,7 +78,7 @@ const typePosition = async (index, value) => {
 };
 const selectedLabel = () => evaluate("document.querySelector('.hierarchy-row-wrap.selected .hierarchy-label')?.textContent ?? 'nothing selected'");
 
-expect("app becomes ready", await waitFor("!!document.querySelector('.add-object-trigger')", 30000));
+expect("app becomes ready", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 30000));
 
 // The Cube, selected: read its position and its record id off its own body.
 await addObject("Cube");

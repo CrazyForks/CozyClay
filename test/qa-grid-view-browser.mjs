@@ -51,7 +51,7 @@ const gridMesh = `(() => { let g = null; ${sceneRoot}.traverse((c) => { if (c.na
 // The deck is the only Lambert plane painted #fffdf7 (src/room.jsx FLOOR).
 const deckPresent = `(() => { let found = false; ${sceneRoot}.traverse((c) => { if (c.isMesh && c.material?.color?.getHexString?.() === "fffdf7") found = true; }); return found; })()`;
 
-expect("app becomes ready", await waitFor("!!document.querySelector('.add-object-trigger')", 30000));
+expect("app becomes ready", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 30000));
 expect("the scene graph hook is live", await waitFor("!!window.__cozyclay?.editorCam?.parent", 30000));
 // The toggle folded into the viewport bar's View ▾ menu (#194), keeping its
 // class and aria-pressed contract; the menu is opened before each use.

@@ -136,6 +136,20 @@ const transform = () =>
 		"Object.fromEntries([...document.querySelectorAll('.inspector-pane .vec3-row')].filter(r => !r.closest('.subject-box')).map(r => [r.querySelector('.vec3-label').textContent, [...r.querySelectorAll('input')].map(i => parseFloat(i.value))]))",
 	);
 const click = (selectorExpression) => evaluate(`${selectorExpression}.click()`);
+const openCreateMenu = async () => {
+	await evaluate(`(() => {
+		const row = document.querySelector('.v2-outliner [data-node-id="light"]');
+		const box = row.getBoundingClientRect();
+		row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(box.left + 28), clientY: Math.round(box.top + 12), button: 2 }));
+		return true;
+	})()`);
+	await waitFor("document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item').length > 0");
+};
+const addObject = async (label) => {
+	await openCreateMenu();
+	await click(`[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find(b => b.textContent.startsWith(${JSON.stringify(label)}))`);
+	await waitFor("window.__gizmoHandles().length > 0");
+};
 /** real visibility, not presence: the element must exist, paint a non-zero
  * rect, and sit inside the viewport. A hidden card still contributes its text
  * to document.body.textContent — only the rect proves it is on screen. */
@@ -169,12 +183,8 @@ await sleep(1500);
 
 /* ------------------------------------------------------- creation ---- */
 
-expect("the hierarchy offers an Add object control", await evaluate("!!document.querySelector('.add-object-trigger')"));
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items so the
-// catalogue read below never sees an empty list
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-const catalogue = await evaluate("[...document.querySelectorAll('.add-object-item')].map(b => b.textContent)");
+await openCreateMenu();
+const catalogue = await evaluate("[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].map(b => b.textContent)");
 expect(
 	"the catalogue lists primitives and set pieces",
 	["Cube", "Sphere", "Capsule", "Cylinder", "Cone", "Plane", "Chair", "Car"].every((label) =>
@@ -183,7 +193,7 @@ expect(
 	JSON.stringify(catalogue),
 );
 
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
+await click("[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find(b => b.textContent.startsWith('Cube'))");
 // the creation commit renders the gizmo and inspector together; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 expect("the new object opens in the inspector", Object.keys(await transform()).join() === "Position,Rotation,Scale", JSON.stringify(await transform()));
@@ -502,12 +512,7 @@ expect("the bird's-eye board drives the same object record", afterPlan.Position[
 // A fresh object stays axis-aligned even when the view is somewhere else
 // entirely — creation must not inherit the camera's yaw.
 await drag({ x: 300, y: 300 }, { x: 460, y: 320 }, { button: "right" });
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
-// the creation commit renders the gizmo and inspector together; poll for it
-await waitFor("window.__gizmoHandles().length > 0");
+await addObject("Chair");
 expect("an object created from a swung camera is still unrotated", JSON.stringify((await transform()).Rotation) === "[0,0,0]", JSON.stringify(await transform()));
 await click("document.querySelector('.inspector-actions-trigger')");
 await waitFor("document.querySelectorAll('.inspector-actions-menu button').length > 0");
@@ -571,10 +576,7 @@ const expandProps = async () => {
 // case 1: a saved scene survives a reload (the debounced save has fired)
 await clearSceneKeys();
 await reloadPage();
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
+await addObject("Chair");
 await sleep(700); // past the 400 ms debounce
 await reloadPage();
 await expandProps();
@@ -639,10 +641,7 @@ await clearSceneKeys();
 // flush, not by the debounce after an edit, not by the pagehide flush.
 await setSceneKey('{"version":99,"objects":[]}');
 await reloadPage();
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
+await addObject("Cube");
 await sleep(700); // past the debounce: the blocked flush must NOT write
 await evaluate("window.dispatchEvent(new Event('pagehide'))");
 expect(
@@ -654,10 +653,7 @@ await clearSceneKeys();
 
 // case 6: a failing setItem is visible and the session keeps working
 await reloadPage();
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
+await addObject("Cube");
 await sleep(600); // let the pre-stub write land, then break storage
 await evaluate(`
 	window.__realSetItem = Storage.prototype.setItem;
@@ -799,19 +795,8 @@ await reloadPage();
 // top whose footprint it overlaps, or the floor. Two objects created from the
 // same camera position land on the same x/z, so the chair's 0.6 m footprint
 // sits fully inside the cube's 1 m one, and the cube's top is y = 1.
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
-// the creation commit renders the gizmo and inspector together; poll for it
-await waitFor("window.__gizmoHandles().length > 0");
-
-await click("document.querySelector('.add-object-trigger')");
-// the popover mounts on a click-driven state flip; poll for its items
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
-// the creation commit renders the gizmo and inspector together; poll for it
-await waitFor("window.__gizmoHandles().length > 0");
+await addObject("Cube");
+await addObject("Chair");
 
 // Raise the chair clear of the cube (2.5 > 1) by typing into the Position Y
 // field; blur commits the draft as one atomic entry.

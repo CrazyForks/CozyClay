@@ -99,9 +99,14 @@ await sleep(1200);
 
 /* ------------------------------------------------------ a cube to scrub ---- */
 
-await evaluate("document.querySelector('.add-object-trigger').click()");
-await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
+await evaluate(`(() => {
+	const row = document.querySelector('.v2-outliner [data-node-id="light"]');
+	const box = row.getBoundingClientRect();
+	row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(box.left + 28), clientY: Math.round(box.top + 12), button: 2 }));
+	return true;
+})()`);
+await waitFor("document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item').length > 0");
+await evaluate("[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
 await waitFor("[...document.querySelectorAll('.inspector-pane .vec3-row')].some(r => r.querySelector('.vec3-label').textContent === 'Scale')");
 await sleep(400);
 

@@ -75,7 +75,7 @@ const loaded = new Promise(resolve => {
 });
 await send("Page.reload", { ignoreCache: false });
 await loaded;
-expect("the studio comes back up", await waitFor("!!document.querySelector('.add-object-trigger')", 40000));
+expect("the studio comes back up", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 40000));
 expect("the hierarchy has rendered", await waitFor("document.querySelectorAll('.hierarchy-row-wrap').length > 0", 15000));
 
 const trigger = "document.querySelector('.view-menu-trigger')";

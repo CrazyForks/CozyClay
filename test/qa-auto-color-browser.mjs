@@ -52,11 +52,16 @@ const sceneColors = `(() => {
 	return hexes;
 })()`;
 
-expect("app becomes ready", await waitFor("!!document.querySelector('.add-object-trigger')", 30000));
+expect("app becomes ready", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 30000));
 const addObject = async (label) => {
-	await evaluate("document.querySelector('.add-object-trigger').click()");
-	await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-	await evaluate(`[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith(${JSON.stringify(label)})).click()`);
+	await evaluate(`(() => {
+		const row = document.querySelector('.v2-outliner [data-node-id="light"]');
+		const box = row.getBoundingClientRect();
+		row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(box.left + 28), clientY: Math.round(box.top + 12), button: 2 }));
+		return true;
+	})()`);
+	await waitFor("document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item').length > 0");
+	await evaluate(`[...document.querySelectorAll('.v2-outliner .hierarchy-context-menu .add-object-item')].find(b => b.textContent.startsWith(${JSON.stringify(label)})).click()`);
 	await sleep(300);
 };
 await addObject("Cube");

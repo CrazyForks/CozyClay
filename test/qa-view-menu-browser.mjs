@@ -60,7 +60,7 @@ await waitFor("location.href.startsWith('http')", 30000);
 await evaluate("localStorage.setItem('cozyclay.locale', 'en')");
 await send("Page.enable");
 await send("Page.reload", { ignoreCache: false });
-expect("the studio comes back up", await waitFor("!!document.querySelector('.add-object-trigger')", 40000));
+expect("the studio comes back up", await waitFor("!!document.querySelector('.v2-outliner .v2-outliner-search')", 40000));
 expect("the scene-graph hook is live", await waitFor("!!window.__cozyclay?.editorCam?.parent", 30000));
 expect("the hierarchy has rendered", await waitFor("document.querySelectorAll('.hierarchy-row-wrap').length > 0", 15000));
 

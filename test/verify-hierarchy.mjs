@@ -237,7 +237,14 @@ expect(
 	"the scene root renders no fold caret, and cannot be folded",
 	panelSource.includes("foldable={!sceneRoot}") &&
 		panelSource.includes("{branch && foldable ? (") &&
-		panelSource.includes("const open = sceneRoot || expanded.has(node.id);"),
+		panelSource.includes("const open = sceneRoot || expanded.has(node.id) || Boolean(search.trim());"),
+);
+expect(
+	"the hierarchy toolbar is replaced by the scoped Outliner",
+	panelSource.includes('className="hierarchy-pane v2-outliner"') &&
+		panelSource.includes('className="v2-outliner-search"') &&
+		!panelSource.includes("<AddObjectMenu") &&
+		!panelSource.includes('className="hierarchy-toolbar"'),
 );
 
 // The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
