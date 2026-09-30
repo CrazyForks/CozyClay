@@ -7514,10 +7514,12 @@ export default function App() {
 							{ikMode && motion && (
 								<MotionTrails
 									motion={motion}
+									rig={activeRig}
 									baseY={activeChar.y ?? 0}
 									charScale={activeChar.scale ?? 1}
 									ikFocus={ikFocus}
 									falloffFrames={trailFalloffFrames}
+									playheadFrame={tlFrame}
 									pendingEdit={trailEdit}
 									enabled={ikMode && ikEditTool === "trail" && showTrails && !posing && !playMode}
 									visible={showTrails}

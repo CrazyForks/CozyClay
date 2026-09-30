@@ -2,7 +2,7 @@ import {
 	FAL_MOTION_STILL_OUTPUT, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_MIN_DURATION,
 	waitForFalMotionJob, submitFalMotion, buildH3MotionPrompt,
 } from "../fal-motion-client.js";
-import { useState, useEffect, useSyncExternalStore, useContext } from "react";
+import { useState, useEffect, useSyncExternalStore, useContext, useRef } from "react";
 import { AppContext } from '../app-context.js';
 import { createDocumentStore } from '../document-store.js';
 import { useDocumentDomain } from '../store/use-document-store.js';
@@ -91,7 +91,11 @@ import {
 } from "../take-recipe.js";
 import { buildGenerationRequest, generationRefusal } from '../motion/generation.js';
 import { planPosePin } from '../ardy/pose-pin.js';
-import { worldDeltaToClip, applyTrailFalloffDelta, trailEditRange } from "../motion-trail.js";
+import { applyTrailFalloffDelta, restoreTrailEdits, trailEditRange, worldDeltaToTrailClip } from "../motion-trail.js";
+import { bakeIkDragKey, chainsChangedBy, ikDragRecord, ikDragTouch } from "../ardy/ik-drag.js";
+import { ikKeyJson, ikTrackKeyFromJson } from "../ardy/ik-key-json.js";
+import { findAbsoluteIkKeyConflicts } from "../trail-key-conflicts.js";
+import { chooseIkEntryPose } from "../ik-camera.js";
 import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
 import { openMotionDb, getMotion, putMotion } from "../motion-store.js";
@@ -106,6 +110,7 @@ function encodeMotionKeys(keys) {
 		...(key.q ? { q: key.q.map(keyQuaternion) } : {}), ...(key.p ? { p: keyVector(key.p) } : {}),
 		...(key.baseQ ? { baseQ: key.baseQ.map(keyQuaternion) } : {}), ...(key.basePos ? { basePos: keyVector(key.basePos) } : {}),
 		...(key.chainP ? { chainP: key.chainP.map(keyVector) } : {}), ...(key.keepTranslations ? { keepTranslations: true } : {}),
+		...(key.blend != null ? { blend: key.blend } : {}),
 	}])) }));
 }
 function decodeMotionKeys(rows) {
@@ -115,6 +120,7 @@ function decodeMotionKeys(rows) {
 		q: key.q?.map(q) ?? null, p: key.p ? p(key.p) : null,
 		...(key.baseQ ? { baseQ: key.baseQ.map(q) } : {}), ...(key.basePos ? { basePos: p(key.basePos) } : {}),
 		...(key.chainP ? { chainP: key.chainP.map(p) } : {}), ...(key.keepTranslations ? { keepTranslations: true } : {}),
+		...(key.blend != null ? { blend: key.blend } : {}),
 	}]))]));
 }
 
@@ -126,7 +132,7 @@ export function createMotionDomain(appContext, characters) {
 	const references = entries => entries.map(entry => {
 		const ref = entry.motionRef;
 		const take = ref ? { resourceId: `restore:${entry.id}:${ref.motionId ?? ref.url}`, url: ref.url ?? null, anchorX: ref.anchorX, anchorZ: ref.anchorZ,
-			rotationDeg: ref.rotationDeg, prompt: ref.prompt ?? '', ...(ref.studioTakeId ? { studioTakeId: ref.studioTakeId } : {}) } : null;
+			rotationDeg: ref.rotationDeg, prompt: ref.prompt ?? '', ...(ref.trailEdits ? { trailEdits: ref.trailEdits } : {}), ...(ref.studioTakeId ? { studioTakeId: ref.studioTakeId } : {}) } : null;
 		return { id: entry.id, take, fullTake: take, takeVersions: ref?.url ? [{ motionUrl: ref.url, recipe: null, savedAt: Date.now(), label: ko('Loaded', '불러옴') }] : [] };
 	});
 	function snapshotTake(take) {
@@ -136,6 +142,7 @@ export function createMotionDomain(appContext, characters) {
 		takes.set(resourceId, copy);
 		return { resourceId, frames: take.frames, fps: take.fps, url: take.url ?? null, prompt: take.prompt ?? '',
 			anchorX: take.anchorX ?? 0, anchorZ: take.anchorZ ?? 0, anchorFrame: take.anchorFrame ?? 0, rotationDeg: take.rotationDeg ?? 0,
+			...(take.trailEdits ? { trailEdits: take.trailEdits } : {}),
 			editSegments: take.editSegments ?? createMotionEdit(take.frames), studioTakeId: take.studioTakeId ?? resourceId };
 	}
 	const normalize = rows => rows.map(row => ({ ...emptyMotionLayer(row.id), ...row,
@@ -284,9 +291,17 @@ export function createMotionDomain(appContext, characters) {
 		}
 		setKeys(id, state.keys);
 	}
-	function bakeCurrentKey(id, at) {
+	function bakeCurrentKey(id, at, dragIds = null) {
 		const rig = rigFor(id), resolved = rig && resolveIkRig(rig);
 		if (!resolved) return null;
+		const take = motionFor(id);
+		if (dragIds) {
+			const keyed = bakeIkDragKey(resolved.chains, resolved.fkJoints, at, dragIds, take
+				? (rawRig) => applyMotionFrame(rawRig, take, at)
+				: null);
+			if (keyed && take) for (const key of keyed.values()) key.blend = 6;
+			return keyed ? run('ik.setKey', { characterId: id, frame: at, tracks: ikKeyJson(keyed) }) : null;
+		}
 		const scratch = { ...createIkState(), tracked: new Set(appContext.shared.ikStatesRef.current.get(id)?.tracked) };
 		ikBakeKeyframe(resolved.chains, scratch, at, resolved.fkJoints);
 		const keyed = encodeMotionKeys(scratch.keys)[0];
@@ -301,12 +316,15 @@ export function createMotionDomain(appContext, characters) {
 			ikBakeKeyframe(resolved.chains, state, at, resolved.fkJoints);
 		});
 	}
-	function editTrail(id, { grabFrame, radiusFrames, delta }) {
+	function editTrail(id, { track = "hips", grabFrame, radiusFrames, delta }) {
 		const take = motionFor(id), character = appContext.storeDomain('cast').read().find(row => row.id === id);
 		if (!take) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take first.');
 		const scale = character.scale ?? 1;
-		const clipDelta = worldDeltaToClip(take, { x: delta.x / scale, y: delta.y / scale, z: delta.z / scale });
-		writeLayer(id, { take: snapshotTake(applyTrailFalloffDelta(take, { grabFrame, radiusFrames, clipDelta })) });
+		const rig = rigFor(id);
+		const clipDelta = worldDeltaToTrailClip(take, delta, { track, grabFrame, radiusFrames, rig, scale });
+		const edited = snapshotTake(applyTrailFalloffDelta(take, { track, grabFrame, radiusFrames, clipDelta }));
+		writeLayer(id, { take: edited });
+		castWrite(rows => rows.map(row => row.id === id ? { ...row, motionRef: { ...row.motionRef, trailEdits: edited.trailEdits } } : row));
 	}
 	const physicsReviews = new Map();
 	let physicsJob = 0;
@@ -452,6 +470,11 @@ export function useMotion(appContext) {
 	// every drag tick and must not re-render the scene; ikTick re-renders
 	// only the timeline markers.
 	const [ikMode, setIkMode] = useState(false);
+	// A drag records only the tracks it actually writes. The record is kept
+	// outside React renders so pointer moves stay cheap and the drag-end bake
+	// can create a delta key over the raw clip.
+	const ikDragRef = useRef(null);
+	const ikCameraMemoryRef = useRef(new Map());
 
 	const [ikChains, setIkChains] = useState(null);
 
@@ -553,20 +576,11 @@ export function useMotion(appContext) {
 	function setCharacterIkKey(characterId, frame, tracks) {
 		appContext.shared.castMemberOf(characterId);
 		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').setKey(characterId, frame, tracks);
-		const quaternion = (q) => new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize();
-		const vector = (p) => new THREE.Vector3(p.x, p.y, p.z);
 		editCharacterIkKeys(characterId, (state) => {
 			let entry = state.keys.get(frame);
 			if (!entry) state.keys.set(frame, (entry = new Map()));
 			for (const [track, key] of Object.entries(tracks)) {
-				entry.set(track, {
-					q: key.q?.map(quaternion) ?? null,
-					p: key.p ? vector(key.p) : null,
-					...(key.baseQ ? { baseQ: key.baseQ.map(quaternion) } : {}),
-					...(key.basePos ? { basePos: vector(key.basePos) } : {}),
-					...(key.chainP ? { chainP: key.chainP.map(vector) } : {}),
-					...(key.keepTranslations ? { keepTranslations: true } : {}),
-				});
+				entry.set(track, ikTrackKeyFromJson(key));
 				ikTouch(state, track);
 			}
 		});
@@ -596,16 +610,7 @@ export function useMotion(appContext) {
 
 	/** A baked key entry in the JSON form character.setIkKey takes. */
 	function ikKeyJson(entry) {
-		const quaternion = (q) => ({ x: q.x, y: q.y, z: q.z, w: q.w });
-		const vector = (p) => ({ x: p.x, y: p.y, z: p.z });
-		return Object.fromEntries([...entry].map(([track, key]) => [track, {
-			...(key.q ? { q: key.q.map(quaternion) } : {}),
-			...(key.p ? { p: vector(key.p) } : {}),
-			...(key.baseQ ? { baseQ: key.baseQ.map(quaternion) } : {}),
-			...(key.basePos ? { basePos: vector(key.basePos) } : {}),
-			...(key.chainP ? { chainP: key.chainP.map(vector) } : {}),
-			...(key.keepTranslations ? { keepTranslations: true } : {}),
-		}]));
+		return ikKeyJson(entry);
 	}
 
 	const [bridge, setBridge] = useState(null);
@@ -741,6 +746,16 @@ export function useMotion(appContext) {
 
 	/* --------------------------- motion playback ---------------------------- */
 	function leaveIkMode() {
+		const poserCam = appContext.shared.poserCamRef?.current;
+		if (ikMode && poserCam && appContext.shared.activeChar?.id) {
+			const look = appContext.shared.poserLook?.current ?? {};
+			ikCameraMemoryRef.current.set(appContext.shared.activeChar.id, {
+				position: poserCam.position.clone(),
+				quaternion: poserCam.quaternion.clone(),
+				yaw: look.yaw ?? poserCam.rotation.y,
+				pitch: look.pitch ?? poserCam.rotation.x,
+			});
+		}
 		setIkMode(false);
 		setIkFocus(null);
 	}
@@ -1139,7 +1154,7 @@ export function useMotion(appContext) {
 		}, TAKE_VERSIONS_MAX);
 		owned.replace(characterId, take, { recipe: imported, versions });
 		const motionRef = { url: take.url, prompt: take.prompt, rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ,
-			calibration: take.sceneCalibration, ...(take.motionId ? { motionId: take.motionId } : {}) };
+			calibration: take.sceneCalibration, ...(take.trailEdits ? { trailEdits: take.trailEdits } : {}), ...(take.motionId ? { motionId: take.motionId } : {}) };
 		owned.castWrite(rows => rows.map(row => row.id === characterId ? { ...row, scale, motionRef,
 			layer: promptClips ? { ...row.layer, promptClips } : row.layer } : row));
 		if (job) {
@@ -1360,12 +1375,19 @@ export function useMotion(appContext) {
 			// the shot camera's pose so nothing jumps, then navigation moves
 			// the POSER only — the shot camera (inset) stays frozen.
 			const shotCam = appContext.shared.shotCamRef.current;
+			const editorCam = appContext.shared.editorCamRef?.current;
 			const poserCam = appContext.shared.poserCamRef.current;
-			if (shotCam && poserCam) {
-				poserCam.position.copy(shotCam.position);
-				poserCam.quaternion.copy(shotCam.quaternion);
+			const pose = chooseIkEntryPose({
+				rememberedPose: ikCameraMemoryRef.current.get(appContext.shared.activeChar.id) ?? null,
+				editorPose: editorCam ? { position: editorCam.position, quaternion: editorCam.quaternion, yaw: appContext.shared.editorLook?.current?.yaw, pitch: appContext.shared.editorLook?.current?.pitch } : null,
+				shotPose: shotCam ? { position: shotCam.position, quaternion: shotCam.quaternion, yaw: shotCam.rotation.y, pitch: shotCam.rotation.x } : null,
+				lookThroughShot: appContext.shared.lookThroughShot,
+			});
+			if (pose && poserCam) {
+				poserCam.position.copy(pose.position);
+				poserCam.quaternion.copy(pose.quaternion);
 				poserCam.rotation.order = "YXZ";
-				appContext.shared.poserLook.current = { yaw: shotCam.rotation.y, pitch: shotCam.rotation.x };
+				appContext.shared.poserLook.current = { yaw: pose.yaw ?? poserCam.rotation.y, pitch: pose.pitch ?? poserCam.rotation.x };
 			}
 			setIkMode(true);
 			appContext.notify(motion
@@ -1386,10 +1408,12 @@ export function useMotion(appContext) {
 	// ends pinned (the handle snaps to the clamped position); FK joints swing
 	// toward the pointer. Keys are baked on drag END — see ikDragEnd.
 	function ikSolve(kind, trackId, targetWorld) {
+		ikDragRef.current = ikDragRecord(ikDragRef.current, appContext.shared.tlFrame);
+		const touch = (id) => ikDragTouch(appContext.shared.ikStateRef.current, ikDragRef.current, id);
 		if (kind === "chain") {
 			const chain = appContext.shared.ikStateRef.current.chains?.get(trackId);
 			if (!chain) return;
-			ikTouch(appContext.shared.ikStateRef.current, trackId);
+			touch(trackId);
 			const clampedTarget = bodyContact ? clampIkTargetToFloor(trackId, targetWorld, 0, ikChains?.get(trackId)?.contactHeights ?? ikChains?.values().next().value?.contactHeights) : targetWorld;
 			appContext.shared.ikStateRef.current.targets.set(trackId, clampedTarget.clone());
 			solveIk(chain, clampedTarget);
@@ -1400,7 +1424,7 @@ export function useMotion(appContext) {
 			const midDef = MID_TRACKS.find((t) => t.id === trackId);
 			const chain = midDef ? appContext.shared.ikStateRef.current.chains?.get(midDef.chain) : null;
 			if (!chain) return;
-			ikTouch(appContext.shared.ikStateRef.current, chain.track.id);
+			touch(chain.track.id);
 			solveMidJoint(chain, bodyContact ? clampIkTargetToFloor(trackId, targetWorld, 0, chain.contactHeights) : targetWorld);
 			return;
 		}
@@ -1410,7 +1434,7 @@ export function useMotion(appContext) {
 		if (kind === "swing") {
 			const chain = appContext.shared.ikStateRef.current.chains?.get(trackId);
 			if (!chain || !targetWorld?.axis) return;
-			ikTouch(appContext.shared.ikStateRef.current, trackId);
+			touch(trackId);
 			solveEffectorSwing(chain, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 			return;
 		}
@@ -1422,7 +1446,7 @@ export function useMotion(appContext) {
 		if (kind === "body") {
 			const joint = ikFkJoints?.get(trackId);
 			if (!joint) return;
-			ikTouch(appContext.shared.ikStateRef.current, trackId);
+			touch(trackId);
 			if (footSnap && !appContext.shared.ikBodyDragRef.current && ikChains) {
 				// Capture the plant points once, BEFORE the first hips move.
 				ikPlantFeet(ikChains, appContext.shared.ikStateRef.current);
@@ -1435,17 +1459,19 @@ export function useMotion(appContext) {
 			if (footSnap && ikChains) {
 				ikSolvePlantedFeet(ikChains, appContext.shared.ikStateRef.current);
 				// the planted re-solve wrote the leg bones — key them too
-				ikTouch(appContext.shared.ikStateRef.current, "leftFoot");
-				ikTouch(appContext.shared.ikStateRef.current, "rightFoot");
+				touch("leftFoot");
+				touch("rightFoot");
 			}
-			if (bodyContact && ikChains) applyBodyContact(ikChains, ikFkJoints, 0, { skipFeet: footSnap });
+			if (bodyContact && ikChains) {
+				for (const id of chainsChangedBy(ikChains, () => applyBodyContact(ikChains, ikFkJoints, 0, { skipFeet: footSnap }))) touch(id);
+			}
 			return;
 		}
 		// FK swing: targetWorld is the trackball payload { axis, angle,
 		// startQuat, startParentQuat } from the drag layer.
 		const joint = ikFkJoints?.get(trackId);
 		if (!joint || !targetWorld?.axis) return;
-		ikTouch(appContext.shared.ikStateRef.current, trackId);
+		touch(trackId);
 		solveSwingAngle(joint, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 	}
 
@@ -1453,9 +1479,13 @@ export function useMotion(appContext) {
 	// scrub away and back restores the dragged pose exactly (slerp).
 	function ikDragEnd() {
 		appContext.shared.ikBodyDragRef.current = false;
+		const drag = ikDragRef.current;
+		ikDragRef.current = null;
 		// One entry per drag: the pointermoves only moved bones, the keys map is
 		// untouched until this bake — the key it sets records the pre-drag keys.
-		if (appContext.storeDomain('motion') || ikChains) keyIkPoseAtPlayhead();
+		if (appContext.storeDomain('motion') || ikChains) keyIkPoseAtPlayhead(
+			motion ? (drag ? drag.ids : null) : null,
+		);
 		setIkTick((n) => n + 1);
 	}
 
@@ -1463,8 +1493,8 @@ export function useMotion(appContext) {
 	 * and set them as a key through the shared registry. A bake only writes
 	 * TRACKED parts: with nothing dragged yet there is no key, nothing is
 	 * dispatched and Ctrl+Z never goes dead. */
-	function keyIkPoseAtPlayhead() {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').bakeCurrentKey(appContext.shared.activeChar.id, appContext.shared.tlFrame);
+	function keyIkPoseAtPlayhead(dragIds = null) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').bakeCurrentKey(appContext.shared.activeChar.id, appContext.shared.tlFrame, dragIds);
 		const scratch = { ...createIkState(), tracked: new Set(appContext.shared.ikStateRef.current.tracked) };
 		ikBakeKeyframe(ikChains, scratch, appContext.shared.tlFrame, ikFkJoints);
 		const baked = scratch.keys.get(appContext.shared.tlFrame);
@@ -1927,8 +1957,10 @@ export function useMotion(appContext) {
 	}
 
 	/* --------------------- trail drag -> preview -> regen -------------------- */
-	function onTrailDragStart() {
+	function onTrailDragStart({ grabFrame } = {}) {
 		if (!motion) return;
+		const frame = Math.round(grabFrame ?? appContext.shared.tlFrame);
+		appContext.shared.setTlFrame(frame);
 		// The pre-drag take is both the deformation base (repeated moves re-derive
 		// from it, so deltas never accumulate) and the undo snapshot.
 		appContext.shared.trailBaseMotionRef.current = motion;
@@ -1937,28 +1969,28 @@ export function useMotion(appContext) {
 
 	/** World drag delta -> clip delta, shedding the character's stature scale
 	 * (the trail is drawn scaled by it). */
-	function trailClipDelta(base, delta) {
+	function trailClipDelta(base, delta, track = "hips", grabFrame = appContext.shared.tlFrame) {
 		const statureScale = appContext.shared.activeChar.scale ?? 1;
-		return worldDeltaToClip(base, { x: delta.x / statureScale, y: delta.y / statureScale, z: delta.z / statureScale });
+		return worldDeltaToTrailClip(base, delta, { track, grabFrame, radiusFrames: trailFalloffFrames, rig: appContext.shared.activeRig, scale: statureScale });
 	}
 
 	/** Per-rAF drag preview. Deliberately React-free: the deformed take lands in
 	 * a ref and on the rig directly, so a drag never re-renders the app. The
 	 * trail/highlight lines are rewritten in place by MotionTrails itself. */
-	function onTrailDragPreview({ grabFrame, delta }) {
+	function onTrailDragPreview({ track, grabFrame, delta }) {
 		const base = appContext.shared.trailBaseMotionRef.current;
 		if (!base) return;
 		const deformed = applyTrailFalloffDelta(base, {
 			grabFrame,
 			radiusFrames: trailFalloffFrames,
-			clipDelta: trailClipDelta(base, delta),
+			track, clipDelta: trailClipDelta(base, delta, track, grabFrame),
 		});
 		appContext.shared.trailPreviewMotionRef.current = deformed;
 		const rig = appContext.shared.activeRig;
 		if (!rig) return;
-		applyMotionFrame(rig, deformed, appContext.shared.tlFrame);
+		applyMotionFrame(rig, deformed, Math.round(grabFrame));
 		if (ikChains && appContext.shared.ikStateRef.current.keys.size > 0) {
-			ikEvaluate(ikChains, appContext.shared.ikStateRef.current, appContext.shared.tlFrame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+			ikEvaluate(ikChains, appContext.shared.ikStateRef.current, Math.round(grabFrame), ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
 		}
 	}
 
@@ -1982,9 +2014,12 @@ export function useMotion(appContext) {
 		}
 		const owned = appContext.storeDomain('motion');
 		if (base !== owned.motionFor(appContext.shared.activeChar.id)) { owned.project(); throw new StudioProtocolError('STALE_TARGET', 'The take changed during the trail drag.'); }
-		owned.run('motion.editTrail', { characterId: appContext.shared.activeChar.id, grabFrame, radiusFrames: trailFalloffFrames, delta });
+		owned.run('motion.editTrail', { characterId: appContext.shared.activeChar.id, track, grabFrame, radiusFrames: trailFalloffFrames, delta });
 		owned.finishGesture();
-		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
+		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta, track, grabFrame) });
+		const { startFrame, endFrame } = trailEditRange(base.frames, grabFrame, trailFalloffFrames);
+		const conflictFrames = findAbsoluteIkKeyConflicts({ keys: appContext.shared.ikStateRef.current.keys, track, startFrame, endFrame });
+		if (conflictFrames.length) appContext.notify(`${ko("Absolute IK keys in this range override the path edit — remove or re-key them", "이 구간의 절대 IK 키가 궤적 수정을 덮어써요 — 해당 키를 지우거나 다시 찍어주세요")} ${isKo ? `프레임 ${conflictFrames.join(", ")}` : `frames ${conflictFrames.join(", ")}`}`);
 	}
 
 	/** Send the pending trail edit through the existing motionEdit pipeline:
@@ -2034,6 +2069,7 @@ export function useMotion(appContext) {
 			const wireFrame = toArdyFrame(frame);
 			if (entries.length && wireFrame <= entries[entries.length - 1].frame) continue;
 			const ikTracks = [...(appContext.shared.ikStateRef.current.keys.get(frame)?.keys() || [])];
+			if (frame === trailEdit.grabFrame && trailEdit.track && !ikTracks.includes(trailEdit.track)) ikTracks.push(trailEdit.track);
 			entries.push({ frame: wireFrame, timelineFrame: frame, tracks: ikTracks.length ? ikTracks : ["hips"], pose });
 		}
 		applyMotionFrame(rig, motion, currentFrame);
@@ -2545,6 +2581,7 @@ export function useMotion(appContext) {
 					editSegments: createMotionEdit(decoded.frames),
 				};
 				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
+				if (entry.motionRef.trailEdits) Object.assign(clip, restoreTrailEdits(clip, entry.motionRef.trailEdits));
 				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
 				appContext.storeDomain('motion').hydrate(entry.id, clip, entry.motionRef);
 			}).catch((error) => {

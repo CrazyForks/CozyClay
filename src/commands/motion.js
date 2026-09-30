@@ -40,7 +40,7 @@ const loads = [
 ].map(entry => ({ ...entry, description: entry.label, kind: 'job', domain: 'motion' }));
 const tools = [
 	mutation('motion.applyPhysics', 'Apply reviewed physics', { characterId: id }),
-	mutation('motion.editTrail', 'Edit motion trail', { characterId: id, grabFrame: frame, radiusFrames: { ...frame, minimum: 1 }, delta: input({ x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }) }),
+	mutation('motion.editTrail', 'Edit motion trail', { characterId: id, track: { type: 'string', enum: ['hips', 'leftFoot', 'rightFoot', 'leftHand', 'rightHand', 'head'], default: 'hips' }, grabFrame: frame, radiusFrames: { ...frame, minimum: 1 }, delta: input({ x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }) }, ['characterId', 'grabFrame', 'radiusFrames', 'delta']),
 	mutation('ik.applyPose', 'Key full-body pose', { characterId: id, frame, pose: { type: 'object', properties: { bones: { type: 'object', properties: {}, required: [], additionalProperties: true }, rootY: { type: 'number' } }, required: ['bones'], additionalProperties: true } }),
 ];
 const physics = { id: 'motion.autoPhysics', label: 'Review motion physics', description: 'Analyse real rig motion and optionally apply one retained correction.', kind: 'job', domain: 'motion',
