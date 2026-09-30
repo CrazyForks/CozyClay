@@ -63,20 +63,34 @@ if (!await ev('window.__cozyclay.ikMode')) {
 	await click('[aria-label="Inverse kinematics"], [aria-label="역운동학"]');
 }
 await wait('window.__cozyclay.ikMode');
+// Use the same framing command as the editor's F shortcut. The motion take
+// can start with the character outside the viewport; evidence should show the
+// rig, feet and range-pin marker rather than an empty floor.
+await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "f", code: "KeyF", windowsVirtualKeyCode: 70 });
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "f", code: "KeyF", windowsVirtualKeyCode: 70 });
+await sleep(400);
 await click('[data-testid="range-pin-tool"]');
 await wait('!!document.querySelector("[data-testid=range-pin-panel]")');
 await wait("[...document.querySelectorAll('[data-testid=range-pin-panel] button')].some(el=>/왼발|Left Foot/i.test(el.textContent) && !el.disabled)");
 await ev("[...document.querySelectorAll('[data-testid=range-pin-panel] button')].find(el=>/왼발|Left Foot/i.test(el.textContent)).click()");
-for (const [selector, value] of [['[data-testid=range-pin-in]', 96], ['[data-testid=range-pin-out]', 140]]) {
+for (const [selector, value] of [['[data-testid=range-pin-in]', 96], ['[data-testid=range-pin-out]', 107]]) {
 	await wait(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
-	await ev(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(String(value))});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+	// These are controlled React inputs. Focus/select followed by the browser's
+	// insertion event exercises the same commit path as a real operator typing
+	// the number; setting the DOM value alone bypasses React's value tracker.
+	await ev(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.focus();el.select();})()`);
+	await send("Input.insertText", { text: String(value) });
+	await ev(`document.querySelector(${JSON.stringify(selector)})?.blur()`);
 	await wait(`document.querySelector(${JSON.stringify(selector)})?.value === ${JSON.stringify(String(value))}`);
 }
 await click('[data-testid="range-pin-apply"]');
 await wait("(window.__cozyclay.rangePins||[]).length === 1");
+await wait("window.__cozyclay.rangePins[0].endFrame === 107");
 const pinState = await ev("({pin:window.__cozyclay.rangePins[0]})");
+const pinHeader = await ev("(()=>{const rect=document.querySelector('.range-pin-panel-head > div')?.getBoundingClientRect();return rect ? {width:rect.width,height:rect.height} : null})()");
+if (!pinHeader || pinHeader.width <= 200 || pinHeader.height >= 60) throw new Error(`Range pin header collapsed ${JSON.stringify(pinHeader)}`);
 const samples = [];
-for (const frame of [96, 107, 118, 129, 140]) {
+for (const frame of [96, 99, 102, 105, 107]) {
 	await ev(`window.__cozyclay.scrub(${frame})`);
 	await wait(`window.__cozyclay.tlFrame===${frame}`);
 	// Let the render loop pose the rig after React publishes the playhead.
@@ -90,11 +104,12 @@ const maxDistanceM = Math.max(...distances.map((sample) => sample.distanceM));
 if (!Number.isFinite(maxDistanceM) || maxDistanceM >= 0.001) throw new Error(`leftFoot pin drift ${maxDistanceM}`);
 const screenshot = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync(`${out}/task-2-pin.png`, Buffer.from(screenshot.data, "base64"));
-writeFileSync(`${out}/task-2-pin.json`, JSON.stringify({ route: "/app/?motion=/demo/walk-then-stop.npz", pin: pinState.pin, samples: distances, maxDistanceM, pass: true }, null, 2));
+writeFileSync(`${out}/task-2-pin.json`, JSON.stringify({ route: "/app/?motion=/demo/walk-then-stop.npz", pin: pinState.pin, pinHeader, samples: distances, maxDistanceM, pass: true }, null, 2));
 // Deliberately exceed limb reach through the production solver seam; the
 // actual inspector must show a warning and the rendered rig must stay finite.
 await click('.range-pin-delete');
 await wait("window.__cozyclay.rangePins.length===0");
+await wait("![...document.querySelectorAll('.range-pin-validation,[role=alert]')].some(el=>/overlapping pin|겹치는 고정/.test(el.textContent))");
 await wait("typeof window.__cozyclay.rangePinApplySpec === 'function'");
 const reach = await ev(`(()=>{const pin={...${JSON.stringify(pinState.pin)},id:'qa-unreachable',reach:'limb',target:{space:'world',position:[999,999,999]}}; const result=window.__cozyclay.rangePinApplySpec(pin);return {pin,residuals:result.residuals}})()`);
 await wait("!!document.querySelector('.range-pin-warning')");

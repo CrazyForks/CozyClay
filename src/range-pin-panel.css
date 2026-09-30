@@ -16,7 +16,7 @@
 }
 
 /* .btn is full-width in the Inspector; keep the header action compact. */
-.range-pin-panel-head > .btn {
+.range-pin-panel-head > .btn.ghost {
 	flex: 0 0 auto;
 	width: auto;
 }

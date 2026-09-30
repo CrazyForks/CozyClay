@@ -698,6 +698,14 @@ export function useMotion(appContext) {
 		const state = ensureRangePinState(appContext.shared.ikStateRef.current), pin = state.pins.get(pinId);
 		if (!pin) return;
 		domain.run('motion.rangePin.remove', { characterId: appContext.shared.activeChar.id, pinId });
+		// Persisting the command updates the document before React publishes the
+		// next render. Clear the live evaluator now too, so a draft preview made
+		// during that transition cannot report the deleted pin as overlapping.
+		const liveState = ensureRangePinState(appContext.shared.ikStateRef.current);
+		removeRangePinKeys(liveState, pinId);
+		liveState.pins.delete(pinId);
+		liveState.pinResiduals.delete(pinId);
+		liveState.tracked = new Set([...liveState.keys.values()].flatMap((entry) => [...entry.keys()]));
 		setRangePinSelection(null); setRangePinPreview(null); setIkTick((value) => value + 1);
 		appContext.notify(isKo ? `${pin.track} 고정을 삭제했어요` : `Deleted ${pin.track} pin`);
 	}
