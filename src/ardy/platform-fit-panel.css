@@ -1,0 +1,61 @@
+/* Inspector scale: 4 px spacing, 13 px section headings, shared flat buttons.
+   Success matches the existing completed-guide marker; warning/error use theme tokens. */
+.platform-fit {
+	--platform-fit-space: 4px;
+	--platform-fit-heading-size: 13px;
+	--platform-fit-rule: 1px;
+	--platform-fit-success: #65c18c;
+	min-width: 0;
+	border-top: var(--platform-fit-rule) solid var(--line2);
+	margin-top: calc(var(--platform-fit-space) * 3);
+	padding-top: calc(var(--platform-fit-space) * 3);
+}
+
+.platform-fit.auto-fix-card {
+	margin-top: 0;
+	padding-top: calc(var(--platform-fit-space) * 3);
+	border-top: var(--platform-fit-rule) solid var(--line2);
+}
+.platform-fit h4 {
+	margin: 0;
+	font-size: var(--platform-fit-heading-size);
+}
+.platform-fit progress { width: 100%; accent-color: var(--accent); }
+.platform-fit-results {
+	display: grid;
+	gap: var(--platform-fit-space);
+	margin: calc(var(--platform-fit-space) * 2) 0 0;
+	padding: 0;
+	list-style: none;
+	max-height: calc(var(--platform-fit-space) * 48);
+	overflow: auto;
+}
+.platform-fit .platform-fit-step {
+	display: grid;
+	grid-template-columns: calc(var(--platform-fit-space) * 2) minmax(0, 1fr);
+	align-items: start;
+	gap: calc(var(--platform-fit-space) * 2);
+	width: 100%;
+	min-width: 0;
+	height: auto;
+	margin: 0;
+	padding: calc(var(--platform-fit-space) * 2);
+	text-align: left;
+	white-space: normal;
+	font-variant-numeric: tabular-nums;
+}
+.platform-fit-step[data-status="ok"] { --platform-fit-status: var(--platform-fit-success); }
+.platform-fit-step[data-status="tooHigh"] { --platform-fit-status: var(--range-pin-warning); }
+.platform-fit-step[data-status="wall"] { --platform-fit-status: var(--danger); }
+.platform-fit-chip {
+	width: calc(var(--platform-fit-space) * 2);
+	height: calc(var(--platform-fit-space) * 2);
+	margin-top: var(--platform-fit-space);
+	border-radius: var(--radius);
+	background: var(--platform-fit-status);
+}
+.platform-fit-step .inspector-hint {
+	display: block;
+	margin: var(--platform-fit-space) 0 0;
+	font-weight: normal;
+}

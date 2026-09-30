@@ -26,6 +26,10 @@ const rangePins = [
 	mutation('motion.rangePin.apply', 'Apply range pin', { characterId: id, pin: rangePin, replaceExisting: { type: 'boolean', default: false } }, ['characterId', 'pin']),
 	mutation('motion.rangePin.remove', 'Remove range pin', { characterId: id, pinId: id }),
 ];
+const platformFit = [
+	{ id: 'motion.platformFit.run', label: 'Fit motion to platforms', description: 'Analyse scene platforms, lift climbable steps and apply the resulting IK correction keys.', kind: 'job', domain: 'motion', timeoutMs: 300000, input: input({ characterId: id }, ['characterId']) },
+	{ id: 'motion.platformFit.remove', label: 'Remove platform fit', description: 'Restore the pre-fit keys, or re-seat edited corrections on the floor.', kind: 'job', domain: 'motion', timeoutMs: 300000, input: input({ characterId: id }, ['characterId']) },
+];
 const edits = [
 	{ ...mutation('motion.set', 'Set take fields', {}), input: setInput },
 	mutation('motion.trim', 'Trim motion', { characterId: id, start: frame, end: frame }),
@@ -70,7 +74,7 @@ const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear t
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
 const videoDraft = { id: 'motion.setVideoDraft', label: 'Set video motion draft', description: 'Set the uncommitted AI-video form without changing the project or its history.', kind: 'transient',
 	input: input({ instruction: { oneOf: [{ const: '' }, { type: 'string', maxLength: 3700 }] }, promptOverride: { oneOf: [{ const: '' }, { type: 'string', maxLength: 3700 }] }, duration: { oneOf: FAL_MOTION_DURATIONS.map(value => ({ const: value })) } }, []) };
-export const declarations = Object.freeze([videoDraft, generate, ...queued, prepared, ...loads, physics, ...tools, ...rangePins, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([videoDraft, generate, ...queued, prepared, ...loads, physics, ...tools, ...rangePins, ...platformFit, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
@@ -132,6 +136,17 @@ export function register(registry, ports) {
 			? owner().bakeRangePin(args.characterId, args.pin, args.replaceExisting)
 			: owner().removePin(args.characterId, args.pinId);
 		return { affectedIds: [args.characterId], summary: declaration.label, ...(output ? { output } : {}) };
+	} });
+	registry.register({ ...platformFit[0], available: mounted, target: args => args.characterId, async run(args, context) {
+		characterOf(ports, args.characterId);
+		const output = await owner().platformFitRun(args.characterId, context);
+		return { affectedIds: [args.characterId], summary: platformFit[0].label, output };
+	} });
+	registry.register({ ...platformFit[1], available: mounted, target: args => args.characterId, run(args, context) {
+		characterOf(ports, args.characterId);
+		const finish = output => ({ affectedIds: [args.characterId], summary: platformFit[1].label, ...(output ? { output } : {}) });
+		const output = owner().platformFitRemove(args.characterId, context);
+		return output?.then ? output.then(finish) : finish(output);
 	} });
 	registerElementSet({ register(entry) { registry.register({ ...entry, available: mounted, run(args) {
 		for (const op of args.ops ?? [args]) take(op.id);

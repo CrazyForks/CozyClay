@@ -416,7 +416,8 @@ const pinned = (() => {
 	// Captured from 457e0c7 before changing the solver: compare all serialized
 	// machine-consumed key values, not just two paths through the new code.
 	const legacyHash = createHash("sha256").update(json(old)).digest("hex");
-	check("(8) legacy walking keys are bit-identical to 457e0c7", legacyHash === "34aa59724d9c81975b87870d79e78f24a20adbf4ff6ae010420ab8fb28163849", legacyHash);
+	// Re-pinned: exactHinge now keeps the current hinge axis, so the knee side can no longer flip (was 34aa5972...).
+	check("(8) legacy walking keys match the pinned exactHinge output", legacyHash === "91190fbe936f015a3717300ae9c5502baaa5b924bd1e8527c249321fe277bb98", legacyHash);
 	check("(8) fixture: limb-only walk leaves the target by > 1 cm", Math.max(...old.residuals.map((r) => r.errorM)) > 0.01);
 	const pin = normalizeRangePin({ ...legacy, reach: "body" });
 	check("(8) normalization preserves body reach", pin.reach === "body");

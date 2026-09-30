@@ -6,12 +6,15 @@ import { PhysicsPanel } from "../ardy/physics-panel.jsx";
 import { Field } from "../ui.jsx";
 import { MotionReadiness } from "../motion-readiness-ui.jsx";
 import { RangePinPanel } from "../range-pin-panel.jsx";
+import { PlatformFitPanel } from "../ardy/platform-fit-panel.jsx";
+import "../ardy/auto-fix-panel.css";
 
 export default function RigControlPanel({
 	isRigSelection, rigSelection, ikChains, ikFocus, footSnap, ikMode, toggleIkMode,
 	collisionCleanupSupported, runFixCollisions, runFixCollisionsRange, motion, autoPhysicsRunning,
 	physicsProgress, physicsPreview, physicsShow, physicsOptions, tlFrame, changePhysicsOptions,
-	runAutoPhysics, showPhysicsPreview, applyPhysicsPreview, cancelPhysicsPreview, setTlFrame, ikEditTool,
+	runAutoPhysics, showPhysicsPreview, applyPhysicsPreview, cancelPhysicsPreview, setTlFrame,
+	platformFitRunning, platformFitProgress, platformFitLast, platformFitApplied, ikEditTool,
 	setIkEditTool, showTrails, setShowTrails, trailFalloffS, setTrailFalloffS, trailEdit, generationBusy,
 	bridgeChecking, bridge, runTrailRegeneration, trailReadinessState, openMotionSetup, recheckMotionHealth,
 	rangePins = [], rangePinResiduals = new Map(), rangePinSelection = null, rangePinPartPick = null, rangePinPreview = null,
@@ -51,6 +54,17 @@ export default function RigControlPanel({
 								</p>
 							</>
 						)}
+						<PlatformFitPanel
+							ko={ko}
+							disabled={!ikChains || !motion || autoPhysicsRunning}
+							running={platformFitRunning}
+							progress={platformFitProgress}
+							last={platformFitLast}
+							applied={platformFitApplied}
+							onRun={() => run('motion.platformFit.run')}
+							onRemove={() => run('motion.platformFit.remove')}
+							onFrame={setTlFrame}
+						/>
 						{/* AutoPhysics needs the hips FK joint and the mass-model bones,
 						    NOT the collision capsules — a rig without toe bases still
 						    qualifies, so this button is deliberately outside the
