@@ -40,8 +40,8 @@ await send("Page.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
 await wait("!!window.__cozyclay?.motion && !!window.__cozyclay?.ikChains");
 
-// Selectors follow App's workflow tabs, hierarchy-panel's tree items and the
-// timeline IK toggle. Support both locales; wait for each actionable control.
+// Selectors follow App's workflow tabs and hierarchy-panel's tree items.
+// Support both locales; wait for each actionable control.
 const click = async (selector) => {
 	await wait(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});return !!el && !el.disabled && el.getClientRects().length>0})()`);
 	await ev(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'nearest'});el.click()})()`);
@@ -59,8 +59,9 @@ if (await ev(`document.querySelector(${JSON.stringify(characterSelector)})?.getA
 }
 await click(`${rigRow} > button.hierarchy-row`);
 await wait(`document.querySelector(${JSON.stringify(rigRow)})?.getAttribute('aria-selected') === 'true'`);
+// Pose mode (key 2) is the one IK entry.
 if (!await ev('window.__cozyclay.ikMode')) {
-	await click('[aria-label="Inverse kinematics"], [aria-label="역운동학"]');
+	for (const type of ["rawKeyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "2", code: "Digit2", windowsVirtualKeyCode: 50 });
 }
 await wait('window.__cozyclay.ikMode');
 // Use the same framing command as the editor's F shortcut. The motion take

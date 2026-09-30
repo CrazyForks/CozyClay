@@ -286,6 +286,7 @@ import { DEPTH_RANGE_M, depthRangeFromFrames, passFileName, renderPass } from ".
 
 import { motionApiOrigin, FAL_MOTION_SHOT_ASPECT } from "./fal-motion-client.js";
 import { serializeOtio } from "./otio.js";
+import "./shell/mode.css";
 import {
 	shotAtFrame,
 	shotIndexAtFrame,
@@ -1368,7 +1369,14 @@ export default function App() {
 	// Keep the underlying selection model intact, but use this small workflow
 	// state to surface only the tools that belong to the current job.
 	const [workflowMode, setWorkflowMode] = useState("scene");
+	// Pose mode IS IK editing (#521): with no rig to solve there is nothing to
+	// pose, so the mode refuses with the reason instead of opening empty.
+	const poseRefusal = ikChains ? null : ko("Load a character to pose it — Pose mode edits its rig with IK", "캐릭터를 불러와야 포즈를 잡을 수 있어요 — 포즈 모드는 IK로 리그를 편집합니다");
 	function selectWorkflowMode(next) {
+		if (next === "pose" && poseRefusal) {
+			setToast(poseRefusal);
+			return;
+		}
 		setWorkflowMode(next);
 		// Picking a department leaves the chrome-free player. Shot-look is
 		// camera work, so it only yields when the operator leaves Camera.
@@ -1384,8 +1392,21 @@ export default function App() {
 			// leaving the operator to hunt through a long inspector column.
 			setPromptBlocksReveal((signal) => signal + 1);
 		}
+		// Pose lands on the active character's rig: its Rig Control panel holds
+		// the IK tools that W/E/R switch between.
+		else if (next === "pose") setSelectedHierarchyId(`${rowIdForCharIndex(activeCharIndex)}.rig`);
 		else setSelectedHierarchyId("shot");
 	}
+	// Every door into the mode (tab, 1-4 keys, view.setMode on the bus) moves
+	// IK with it through the motion domain's own entry/exit path...
+	useEffect(() => {
+		if ((workflowMode === "pose") !== ikMode) toggleIkMode();
+	}, [workflowMode]);
+	// ...and whatever else ends IK (a take starting playback, the rig going
+	// away) hands the operator back to Motion instead of a dead Pose mode.
+	useEffect(() => {
+		if (!ikMode && workflowMode === "pose") setWorkflowMode("motion");
+	}, [ikMode]);
 
 	const toggleHierarchyHidden = (hierarchyId) => {
 		const objectId = sceneObjectIdFromHierarchy(hierarchyId);
@@ -1764,6 +1785,29 @@ export default function App() {
 				event.preventDefault();
 				if (event.shiftKey) redoScene();
 				else undoScene();
+				return;
+			}
+			// 1-4 pick the workflow mode; pose is refused (with its reason) when
+			// there is no rig to solve. The embedded player has no modes to pick.
+			const modeKey = { Digit1: "scene", Digit2: "pose", Digit3: "camera", Digit4: "motion" }[event.code];
+			if (modeKey && !embedMode && !event.ctrlKey && !event.metaKey && !event.altKey) {
+				event.preventDefault();
+				if (modeKey !== workflowMode) selectWorkflowMode(modeKey);
+				return;
+			}
+			// Pose mode's W/E/R are the IK tools, gated like their Rig Control
+			// buttons: the trail tool needs visible trails, the range pin a take.
+			if (workflowMode === "pose" && GIZMO_HOTKEYS[event.code]) {
+				event.preventDefault();
+				if (event.code === "KeyW") setIkEditTool("ik");
+				else if (event.code === "KeyE" && showTrails) setIkEditTool("trail");
+				else if (event.code === "KeyR" && motion) { setIkEditTool("pin"); setRangePinPartPick(null); }
+				return;
+			}
+			// Motion mode's E is Refine: drag the take's path to re-route it.
+			if (workflowMode === "motion" && event.code === "KeyE") {
+				event.preventDefault();
+				enterRefineMode();
 				return;
 			}
 			if (GIZMO_HOTKEYS[event.code]) {
@@ -6524,7 +6568,7 @@ export default function App() {
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
-		readView: readStudioState, publishView: operateStudio,
+		readView: readStudioState, publishView: operateStudio, canPose: () => !poseRefusal,
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
@@ -6810,6 +6854,7 @@ export default function App() {
 						["scene", ko("Scene", "장면"), ko("Place subjects and props", "인물과 소품 배치")],
 						["camera", ko("Camera", "카메라"), ko("Frame the shot", "샷 구도 설정")],
 						["motion", ko("Motion", "모션"), ko("Edit timing and movement", "타이밍과 움직임 편집")],
+						["pose", ko("Pose", "포즈"), ko("Edit the pose with IK", "IK로 포즈 편집")],
 					].map(([id, label, hint]) => (
 						<button
 							type="button"
@@ -6828,6 +6873,11 @@ export default function App() {
 					{workflowMode === "motion" && (
 						<span className="workflow-toolbar-hint" role="status">
 							{ko("Motion mode · edit the timeline below", "모션 모드 · 아래 타임라인에서 편집하세요")}
+						</span>
+					)}
+					{workflowMode === "pose" && (
+						<span className="workflow-toolbar-hint" role="status">
+							{ko("Pose mode · W IK parts · E motion trail · R range pin", "포즈 모드 · W IK 파츠 · E 궤적선 · R 범위 고정")}
 						</span>
 					)}
 						<span className="transform-toolbar-label workflow-scene-context">{ko("Transform", "변환")}</span>
@@ -7563,7 +7613,7 @@ export default function App() {
 								// shot camera in the editing draw instead.
 								playMode={preview}
 								lookThrough={lookThroughShot}
-								insetCollapsed={workspaceLayout.insetCollapsed || workflowMode === "motion"}
+								insetCollapsed={workspaceLayout.insetCollapsed || workflowMode === "motion" || workflowMode === "pose"}
 								planZoom={workspaceLayout.planZoom}
 								shotAspect={shotOutput.aspect}
 							/>
@@ -7941,7 +7991,6 @@ export default function App() {
 						ikFocus={ikFocus}
 						footSnap={footSnap}
 						ikMode={ikMode}
-						toggleIkMode={toggleIkMode}
 						collisionCleanupSupported={collisionCleanupSupported}
 						runFixCollisions={runFixCollisions}
 						runFixCollisionsRange={runFixCollisionsRange}
@@ -8206,7 +8255,7 @@ export default function App() {
 				ghostLayers={ghostLayers}
 				pathSpeed={pathSpeed}
 				playing={tlPlaying}
-				workflowMode={workflowMode}
+				workflowMode={workflowMode === "pose" ? "motion" : workflowMode}
 				waypointMode={waypointMode}
 				waypoints={waypoints}
 				pathSpeed={pathSpeed}
@@ -8261,7 +8310,6 @@ export default function App() {
 					}}
 					cameraRailLength={railCurve?.length ?? null}
 				shotCutDisabled={!!posing || ikMode || waypointMode}
-				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
 				onPinSelect={(id) => { setRangePinSelection(id); setIkEditTool("pin"); }}

@@ -65,6 +65,10 @@ const click = async ({ x, y }) => {
 	await mouse("mouseReleased", x, y);
 	await sleep(180);
 };
+// Pose mode is the one IK entry: key 2 enters it, key 1 (Scene) leaves it.
+const pressDigit = async (digit) => {
+	for (const type of ["rawKeyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: String(digit), code: `Digit${digit}`, windowsVirtualKeyCode: 48 + digit });
+};
 const drag = async (from, to) => {
 	await mouse("mousePressed", from.x, from.y);
 	for (let i = 1; i <= 8; i++) {
@@ -103,12 +107,11 @@ const contactTable = async (label) => {
 	return values;
 };
 // Foot snap and Body contact are IK drag modifiers, so they only exist while
-// IK does (#191). Every fresh navigation lands with IK off: enter it before
-// reading or driving the contact toggle.
-const ikButton = (state) => `[...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK ${state}")`;
+// IK does (#191). Every fresh navigation lands with IK off: enter Pose mode
+// before reading or driving the contact toggle.
 const enterIk = async () => {
 	expect("IK rig resolves", await waitFor("!!window.__cozyclay?.ikChains", 10000));
-	if (!(await evaluate("window.__cozyclay?.ikMode === true"))) await evaluate(`(${ikButton("off")})?.click()`);
+	if (!(await evaluate("window.__cozyclay?.ikMode === true"))) await pressDigit(2);
 	expect("IK mode is on before the contact toggle", await waitFor("window.__cozyclay?.ikMode === true", 4000));
 	expect("Body contact appears with IK on", await waitFor(`!!(${contactButton})`, 4000));
 };
@@ -161,12 +164,8 @@ await send("Page.navigate", { url: baseUrl });
 expect("app resets before IK manipulator checks", await waitFor("!!window.__cozyclay?.rigA && !window.__cozyclay?.ikMode", 10000));
 
 expect("IK rig resolves before manipulator checks", await waitFor("!!window.__cozyclay?.ikChains", 10000));
-expect("IK toggle exists", await evaluate(`(() => {
-	const button = [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK off");
-	if (!button) return false;
-	button.click();
-	return true;
-})()`));
+await pressDigit(2);
+expect("Pose mode enters IK", await waitFor("document.querySelector('.app')?.dataset.workflowMode === 'pose'"));
 expect("IK mode enables", await waitFor("window.__cozyclay?.ikMode === true && !!window.__ikVisibilityDetails"));
 await sleep(300);
 
@@ -237,19 +236,9 @@ const currentVisibleShoulder = await evaluate(`window.__ikControlScreenPositions
 await click(currentVisibleShoulder);
 expect("exposed shoulder remains clickable", await evaluate(`window.__cozyclay?.ikFocus === ${JSON.stringify(visibleShoulder)}`));
 
-expect("IK exit button exists", await evaluate(`(() => {
-	const button = [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK on");
-	if (!button) return false;
-	button.click();
-	return true;
-})()`));
+await pressDigit(1);
 expect("IK exit clears mode and stale focus", await waitFor("window.__cozyclay?.ikMode === false && window.__cozyclay?.ikFocus === null"));
-expect("IK can re-enter for compound manipulator QA", await evaluate(`(() => {
-	const button = [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK off");
-	if (!button) return false;
-	button.click();
-	return true;
-})()`));
+await pressDigit(2);
 expect("IK re-entry starts clean", await waitFor("window.__cozyclay?.ikMode === true && window.__cozyclay?.ikFocus === null"));
 await sleep(250);
 
@@ -334,12 +323,7 @@ await drag(hipsAxisOff, { x: hipsAxisOff.x, y: hipsAxisOff.y + 420 });
 const meshOffDrag = await meshMinY(0);
 expect("contact OFF allows the dragged mesh to sink below the floor", meshOffDrag < -0.02, JSON.stringify({ after: meshOffDrag }));
 
-expect("final IK exit button exists", await evaluate(`(() => {
-	const button = [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK on");
-	if (!button) return false;
-	button.click();
-	return true;
-})()`));
+await pressDigit(1);
 expect("final IK exit clears compound focus", await waitFor("window.__cozyclay?.ikMode === false && window.__cozyclay?.ikFocus === null"));
 expect("browser run has no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 

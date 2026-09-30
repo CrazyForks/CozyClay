@@ -126,6 +126,10 @@ async function typeInto(selector, text) {
 	await send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65 });
 	await send("Input.insertText", { text });
 }
+// Workflow modes answer the 1-4 keys: 2 is Pose (IK editing), 4 is Motion.
+async function pressDigit(digit) {
+	for (const type of ["rawKeyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: String(digit), code: `Digit${digit}`, windowsVirtualKeyCode: 48 + digit });
+}
 async function escape() {
 	for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
 }
@@ -349,7 +353,7 @@ try {
 	await recheck("unavailable", "unavailable");
 	await recheck("local", "ready"); await closeSetup();
 	await changeAndWait("!!document.querySelector('.trail-regenerate')", async () => {
-		await click('[aria-label="Inverse kinematics"]');
+		await pressDigit(2);
 		await click('[data-node-id="characterA.rig"] .hierarchy-row');
 	}, "rig trail regeneration controls");
 	const trailReadiness = ".trail-regenerate + .motion-readiness";
@@ -363,7 +367,7 @@ try {
 		() => click("[data-testid=motion-health-retry]"), "trail setup reflects recovered current health");
 	await closeSetup();
 	await assertPreserved(authored, "trail-origin setup retains its route and preserves edits through recovery");
-	await click('[aria-label="Inverse kinematics"]');
+	await pressDigit(4);
 	await changeAndWait("!!document.querySelector('.prompt-block-generate')",
 		() => click('[data-node-id="characterA"] .hierarchy-row'), "return to prompt generation");
 
