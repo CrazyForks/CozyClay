@@ -999,7 +999,6 @@ export default function Timeline({
 	onPromptMove,
 	onPromptRemove,
 	onClearMotion,
-	onIkToggle,
 	onIkKeyframeAdd,
 	onIkKeyframeRemove,
 	onPinSelect,
@@ -1068,7 +1067,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onPinSelect, onFootSnapToggle, onBodyContactToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkKeyframeAdd, onIkKeyframeRemove, onPinSelect, onFootSnapToggle, onBodyContactToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -1799,16 +1798,6 @@ export default function Timeline({
 							{ikDisabled && !ikMode ? (
 								<span className="tl-pose-hint">{ko("Load a rig to edit poses", "리그를 로드하면 포즈를 편집할 수 있어요")}</span>
 							) : (<>
-								<button
-									type="button"
-									className={"tl-btn ik" + (ikMode ? " on" : "")}
-									aria-pressed={ikMode}
-									aria-label={ko("Inverse kinematics", "역운동학")}
-									title={ko("IK mode — drag a wrist / ankle handle; keys land on the Full-Body lane. With a motion loaded, keys correct it layer-style", "IK 모드 — 손목이나 발목 핸들을 드래그하세요. 키는 전신 레인에 찍히며, 모션을 불러온 뒤에는 레이어 방식으로 보정합니다")}
-									onClick={() => handlers.current.onIkToggle?.()}
-								>
-									{isKo ? `IK ${ikMode ? "켜짐" : "꺼짐"}` : `IK ${ikMode ? "on" : "off"}`}
-								</button>
 								{/* Foot snap and Body contact only reinterpret an IK drag, so
 								    they live for exactly as long as IK does (R7). Two
 								    independent bits, two toggles. */}

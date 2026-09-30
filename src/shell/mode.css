@@ -1,0 +1,9 @@
+/* Pose mode (#521) is IK editing on the motion workspace: it hides what
+   Motion hides (scene transform and camera framing chrome, the inset and the
+   shot preview) and shows the mode hint. The timeline's pose-correction
+   tools are hidden only in Scene and Camera, so they stay visible here. */
+.app[data-workflow-mode="pose"] .workflow-scene-context,
+.app[data-workflow-mode="pose"] .workflow-camera-context { display: none; }
+.app[data-workflow-mode="pose"] .workflow-toolbar-hint { display: inline-flex; }
+.app[data-workflow-mode="pose"] .vp-inset,
+.app[data-workflow-mode="pose"] .vp-shot-preview { display: none !important; }

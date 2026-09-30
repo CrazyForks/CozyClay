@@ -64,7 +64,7 @@ const entries = [
 	{ path: "project", type: "string", persisted: true, undoDomain: null, normalizer: null, actions: ["project.save"], note: "save to the current project file; opening one needs the user's file picker" },
 	{ path: "selection", type: "id", persisted: false, undoDomain: null, normalizer: null },
 	{ path: "timeline", type: "number", persisted: false, undoDomain: null, normalizer: null },
-	{ path: "view.mode", type: "enum", persisted: false, undoDomain: null, normalizer: null, enum: ["scene", "camera", "motion"] },
+	{ path: "view.mode", type: "enum", persisted: false, undoDomain: null, normalizer: null, enum: ["scene", "pose", "camera", "motion"] },
 	{ path: "view.partColoursGuideModeInset", type: "array", persisted: false, undoDomain: null, normalizer: null, actions: ["view.setPartColours", "view.setGuideMode", "view.setInset"], note: "partColours/guideMode/inset; viewer settings, not document fields" },
 	{ path: "read.sceneDescription", type: "string", persisted: false, undoDomain: null, normalizer: null },
 	{ path: "read.captureFrame", type: "image", persisted: false, undoDomain: null, normalizer: null },

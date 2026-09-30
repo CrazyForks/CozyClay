@@ -10,7 +10,7 @@ import { PlatformFitPanel } from "../ardy/platform-fit-panel.jsx";
 import "../ardy/auto-fix-panel.css";
 
 export default function RigControlPanel({
-	isRigSelection, rigSelection, ikChains, ikFocus, footSnap, ikMode, toggleIkMode,
+	isRigSelection, rigSelection, ikChains, ikFocus, footSnap, ikMode,
 	collisionCleanupSupported, runFixCollisions, runFixCollisionsRange, motion, autoPhysicsRunning,
 	physicsProgress, physicsPreview, physicsShow, physicsOptions, tlFrame, changePhysicsOptions,
 	runAutoPhysics, showPhysicsPreview, applyPhysicsPreview, cancelPhysicsPreview, setTlFrame,
@@ -34,9 +34,6 @@ export default function RigControlPanel({
 						<span>{ko("Focus", "초점")}</span><b>{ikFocus ?? ko("None", "없음")}</b>
 						<span>{ko("Foot lock", "발 고정")}</span><b>{footSnap ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
 						</div>
-						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
-						{ikMode ? ko("Finish rig editing", "리그 편집 끝내기") : ko("Edit rig with IK", "IK로 리그 편집")}
-						</button>
 						{/* Self-collision cleanup. Hidden outright on a rig whose capsule
 						    proxies cannot be built: a button whose only answer is "not
 						    supported" is worse than no button, and the hint below would

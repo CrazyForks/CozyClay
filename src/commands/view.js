@@ -18,6 +18,8 @@ export function register(registry, ports) {
 		const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 		if (!Object.keys(args).length || (args.view && !Object.keys(args.view).length)) fail('INVALID_ARGUMENT', 'Specify a view operation.');
 		const state = ports.readView();
+		// Pose mode is IK editing: without a rig to solve there is nothing to pose.
+		if (args.mode === 'pose' && args.mode !== state.view.mode && !ports.canPose()) fail('TARGET_NOT_READY', 'Pose mode needs a loaded character rig to edit with IK.');
 		const selection = args.selection === undefined ? state.selection : args.selection;
 		if (selection) {
 			const found = selection.kind === 'scene' ? selection.id === state.host.sceneId : selection.kind === 'camera' ? selection.id === 'camera'
