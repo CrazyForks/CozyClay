@@ -7587,6 +7587,19 @@ export default function App() {
 							/>
 						)}
 
+						{!(globalThis.__cozyclayWebGLAvailable ??= (() => {
+							if (typeof document === "undefined") return true;
+							const canvas = document.createElement("canvas");
+							return Boolean(canvas.getContext("webgl") || canvas.getContext("experimental-webgl"));
+						})()) && (
+							<div className="gl-lost-overlay" role="alert" data-testid="webgl-unavailable">
+								<div className="gl-lost-card">
+									<strong>{ko("3D graphics (WebGL) is turned off in this browser", "이 브라우저에서 3D 그래픽(WebGL)이 꺼져 있어요")}</strong>
+									<p>{ko("Quit the browser completely (Cmd+Q) and reopen it, or turn on \"Use graphics acceleration when available\" in its settings. chrome://gpu shows the WebGL status.", "브라우저를 완전히 종료(Cmd+Q)했다가 다시 열거나, 설정에서 '가능한 경우 그래픽 가속 사용'을 켜세요. chrome://gpu 에서 WebGL 상태를 확인할 수 있어요.")}</p>
+								</div>
+							</div>
+						)}
+
 						{glContextLost && (
 							<div className="gl-lost-overlay" role="alert">
 								<div className="gl-lost-card">
